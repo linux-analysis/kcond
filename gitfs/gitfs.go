@@ -416,3 +416,16 @@ func grep(ctx context.Context, dir, rev string, strs, globs []string) ([]string,
 	slices.Sort(paths)
 	return paths, nil
 }
+
+// RevList lists the commits of a revision range such as v6.12.1..v6.12.2
+// as git rev-list does, oldest first and without merge commits.
+func RevList(ctx context.Context, dir, spec string) ([]string, error) {
+	if err := checkRev(spec); err != nil {
+		return nil, err
+	}
+	out, err := run(ctx, dir, "rev-list", "--reverse", "--no-merges", spec)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
