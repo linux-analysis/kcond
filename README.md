@@ -1,11 +1,12 @@
 # kcond
 
 kcond answers under which CONFIG_ options the Linux kernel compiles a
-file or a change: it evaluates the Kbuild Makefiles of each architecture
-build symbolically, reads the `#if` and `IS_ENABLED()` regions around
-lines, reads the Kconfig tree to tell which values a symbol can take, and
-evaluates the conditions against a `.config`. It is a Go library with a
-command line and depends on the standard library and git only.
+file, some of its lines or a change: it evaluates the Kbuild Makefiles
+of each architecture build symbolically, reads the `#if` and
+`IS_ENABLED()` regions around lines, reads the Kconfig tree to tell which
+values a symbol can take, and evaluates the conditions against a
+`.config`. It is a Go library with a command line and depends on the
+standard library and git (2.31 or later) only.
 
 ## Install
 
@@ -15,53 +16,97 @@ Or `make build` in a checkout, for `bin/kcond`.
 
 ## The tree
 
-A command reads a kernel tree at a git revision (`--tree DIR --rev REV`,
-through git's object store, so the checkout stays as it is) or from a
-directory (`--src DIR`). The builds are x86_64, i386, arm64, arm,
-powerpc, s390, riscv and loongarch; `--build NAME` reads one of them,
-otherwise every build the tree has. One build of a recent tree takes
-about two seconds to read.
+A command reads the kernel tree the current directory is in, found the
+way git finds a repository, or the one `--tree DIR` names: as checked
+out, or at a git revision with `--rev REV`, through git's object store,
+so the checkout stays as it is. Paths are relative to the current
+directory, or to the tree with `--tree`, and name files of the tree. The builds are x86_64, i386,
+arm64, arm, powerpc, s390, riscv and loongarch; `--build NAME` reads one
+of them, `--config FILE` the one the `.config` is for, and otherwise
+every build the tree has. One build of a recent tree takes about a
+second to read. Flags may come before or after the command.
 
 ## Questions
 
-`cond` gives the Kbuild condition of files, per build:
+`cond` gives the condition under which each build compiles a file, or
+some of its lines: the Kbuild condition of the file, the `#if` region of
+the lines and their AND; with `--config`, whether that holds for the
+`.config`:
 
-    $ kcond --tree ~/linux --rev v6.12 --build x86_64 cond drivers/net/bonding/bond_main.c drivers/net/wireless/intel/iwlwifi/mvm/rx.c
-    drivers/net/bonding/bond_main.c	x86_64	built	CONFIG_BONDING
-    drivers/net/wireless/intel/iwlwifi/mvm/rx.c	x86_64	built	(CONFIG_IWLMEI || CONFIG_IWLWIFI) && CONFIG_IWLMVM && CONFIG_WLAN && CONFIG_WLAN_VENDOR_INTEL
+    $ kcond cond net/ipv4/tcp_ipv4.c:90 net/ipv4/tcp_ipv4.c --rev v6.12 --config .config
+    net/ipv4/tcp_ipv4.c:90	x86_64	built	CONFIG_INET && CONFIG_NET	CONFIG_TCP_MD5SIG	CONFIG_INET && CONFIG_NET && CONFIG_TCP_MD5SIG	applies
+    net/ipv4/tcp_ipv4.c	x86_64	built	CONFIG_INET && CONFIG_NET	true	CONFIG_INET && CONFIG_NET	applies
 
 A file is `built` under its condition, `unlisted` when no Makefile names
-it, `not built` when it belongs to another architecture, or a `header`.
+it, `not built` when it belongs to another architecture, or a `header`,
+whose condition is its region when that names a `CONFIG_` option and
+unknown otherwise, as nothing tells which builds include it.
 
-`diff` reads commits: the kernel files each one changes, the `#if`
-region of the changed lines, each file's condition at the commit, the
-condition of the whole change and the architectures that may build it;
-with `--config` it tells whether the change applies to that `.config`:
+`diff` reads commits, or the commits of a range such as a stable update:
+the kernel files each one changes, the `#if` region of the changed
+lines, each file's condition at the commit and the condition of the
+whole change; with `--config`, whether the change applies to that
+`.config`. `--build`, or `--config` for the build it is for, reads that
+one build; without them every build is read, the condition is x86_64's,
+and the architectures that may build the change are listed. The commit
+line carries the verdict with `--config`, the arch label without it, and
+the condition; the file rows follow indented, so `grep -v '^ '` is the
+one-line view:
 
-    $ kcond --tree ~/linux diff 8eb36164d1a6
-    8eb36164d1a6769a20ed43033510067ff3dab9ee
+    $ kcond diff 8eb36164d1a6
+    8eb36164d1a6	generic	CONFIG_BONDING
       drivers/net/bonding/bond_main.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
       drivers/net/bonding/bond_options.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
       include/net/bond_options.h	header		region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
-      condition: CONFIG_BONDING
-      label: generic
+    $ kcond diff v6.12.1..v6.12.2 --config .config | grep -v '^ ' | grep -w applies
+    78de864e8af3649b03f905e206e6f06f3aa4c006	applies	true
+    cfe3e04e9a5704aac92aaa2b45706850d96af0b9	applies	true
+    26cc5063e3c2a5d14f42fe623c9567bd1499fb19	applies	CONFIG_EXT4_FS
+    ...
+
+A range lists its commits oldest first, merges left out, and reads the
+Makefiles at its end; the 815 commits of v6.12.1..v6.12.2 take about 10
+seconds with `--config` and 25 reading every build. A merge named alone
+reads as its diff to its first parent. A commit that changes only what
+the build never reads, documentation,
+selftests, perf or comments, does not apply, with the label `none` and
+the condition `false`; one that changes no kernel code but Makefiles,
+Kconfig or device trees has no label and is unknown.
 
 `arches` lists the architectures that may build a file, those where its
 condition is unknown and those that always build it, and labels the set
 `generic`, `several`, one architecture, `other` or `none`:
 
-    $ kcond --tree ~/linux --rev v6.12 arches drivers/net/bonding/bond_main.c arch/arm64/kernel/smccc-call.S
+    $ kcond arches drivers/net/bonding/bond_main.c arch/arm64/kernel/smccc-call.S --rev v6.12
     drivers/net/bonding/bond_main.c	arches x86,arm64,arm,powerpc,s390,riscv,loongarch	unknown 	always 
     arch/arm64/kernel/smccc-call.S	arches arm64	unknown 	always arm64
     label: generic
 
+`files` lists the sources one build compiles under the given
+directories, the current one by default, with their Kbuild conditions; with `--config`, only those
+the `.config` builds, for scoping a static analysis or a coverage run:
+
+    $ kcond files drivers/net/bonding --rev v6.12
+    drivers/net/bonding/bond_3ad.c	CONFIG_BONDING
+    drivers/net/bonding/bond_alb.c	CONFIG_BONDING
+    drivers/net/bonding/bond_debugfs.c	CONFIG_BONDING
+    drivers/net/bonding/bond_main.c	CONFIG_BONDING
+    drivers/net/bonding/bond_netlink.c	CONFIG_BONDING
+    drivers/net/bonding/bond_options.c	CONFIG_BONDING
+    drivers/net/bonding/bond_procfs.c	CONFIG_BONDING && CONFIG_PROC_FS
+    drivers/net/bonding/bond_sysfs.c	CONFIG_BONDING
+    drivers/net/bonding/bond_sysfs_slave.c	CONFIG_BONDING
+    $ kcond files net/ipv4 --rev v6.12 --config .config | wc -l
+    73
+
 `symbols` tells what a build's Kconfig says about symbols: the values
 they can take (`n`, `m`, `y`), whether they can be modules and which
-symbols they require:
+symbols they require, or that the Kconfig has no bool or tristate of the
+name; with `--config`, what the `.config` sets them and their
+requirements to:
 
-    $ kcond --tree ~/linux --rev v6.12 --build x86_64 symbols BONDING NET
-    CONFIG_BONDING	x86_64	values nmy	modular true	requires CONFIG_INET,CONFIG_NET,CONFIG_NETDEVICES,CONFIG_NET_CORE
-    CONFIG_NET	x86_64	values ny	modular false	requires 
+    $ kcond symbols BONDING --rev v6.12 --config .config
+    CONFIG_BONDING	x86_64	values nmy	modular true	config n	requires CONFIG_INET=y,CONFIG_NET=y,CONFIG_NETDEVICES=y,CONFIG_NET_CORE=y
 
 `config` reads a `.config`, plain or gzip-compressed, and `eval` tells
 whether conditions hold for it: a condition `applies`, is `not
@@ -73,7 +118,7 @@ a macro, is left:
     version: 6.12.0
     partial: false
     options: 1704
-    $ kcond --config .config eval CONFIG_NET CONFIG_BONDING CONFIG_NET=m '"defined(FOO)" && CONFIG_NET'
+    $ kcond eval CONFIG_NET CONFIG_BONDING CONFIG_NET=m '"defined(FOO)" && CONFIG_NET' --config .config
     CONFIG_NET	applies
     CONFIG_BONDING	not applicable
     CONFIG_NET=m	not applicable
@@ -81,8 +126,10 @@ a macro, is left:
 
 Conditions are written `CONFIG_A && (CONFIG_B || !CONFIG_C)`; `CONFIG_X=y`
 and `CONFIG_X=m` test one tristate value, a bare `CONFIG_X` either. An
-option a `.config` does not list is off. Every command prints JSON with
-`--json`.
+option a `.config` does not list is off. `-q` prints nothing and makes
+the exit status the answer, 0 when every condition or commit applies and
+1 otherwise, so a script can ask `kcond eval -q --config .config
+CONFIG_BONDING`; errors exit 2. Every command prints JSON with `--json`.
 
 ## Library
 
@@ -94,7 +141,7 @@ import (
 	"github.com/linux-analysis/kcond/gitfs"
 )
 
-tree, err := gitfs.Open(ctx, dir, "v6.12")  // an fs.FS; os.DirFS works too
+tree, err := gitfs.Open(ctx, dir, "v6.12")  // an fs.FS; gitfs.WorkTree reads a checkout
 b, ok := builds.Named(tree, "x86_64")        // the Makefile crawl and the Kconfig analysis
 fc := builds.BuildCond(path, false, kcond.Const(true), b) // Status, Kbuild, Region
 e, err := kcond.Parse("CONFIG_A && !CONFIG_B")
@@ -113,7 +160,7 @@ the values each symbol can take.
 
     make lint   # gofmt and go vet
     make test   # go test -race ./...
-    make build  # bin/kcond
+    make build  # bin/kcond, with the version of git describe for --version
 
 The module depends on the standard library only; `deps_test.go` checks
 it. The tests build small repositories with git;
