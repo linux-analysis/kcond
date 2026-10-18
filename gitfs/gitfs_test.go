@@ -238,3 +238,38 @@ func TestWorkTree(t *testing.T) {
 		t.Errorf("Grep for missing text = %q, %v; want nothing", got, err)
 	}
 }
+
+func TestRevList(t *testing.T) {
+	f := newFixture(t)
+	commit := func(name, content string) string {
+		write(t, filepath.Join(f.dir, name), content)
+		git(t, f.dir, "add", name)
+		git(t, f.dir, "commit", "-q", "-m", name)
+		return git(t, f.dir, "rev-parse", "HEAD")
+	}
+	base := commit("a.c", "int a;\n")
+	one := commit("b.c", "int b;\n")
+	two := commit("c.c", "int c;\n")
+	branch := git(t, f.dir, "rev-parse", "--abbrev-ref", "HEAD")
+	git(t, f.dir, "checkout", "-q", "-b", "side", base)
+	side := commit("d.c", "int d;\n")
+	git(t, f.dir, "checkout", "-q", branch)
+	git(t, f.dir, "merge", "-q", "--no-ff", "-m", "merge", "side")
+	got, err := RevList(ctx, f.dir, base+"..HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Oldest first and the merge left out; two follows one on their line.
+	sorted, want := slices.Clone(got), []string{one, two, side}
+	slices.Sort(sorted)
+	slices.Sort(want)
+	if !slices.Equal(sorted, want) || slices.Index(got, one) > slices.Index(got, two) {
+		t.Errorf("RevList = %v; want %v oldest first", got, want)
+	}
+	if got, err := RevList(ctx, f.dir, "HEAD..HEAD"); err != nil || len(got) != 0 {
+		t.Errorf("RevList of an empty range = %v, %v", got, err)
+	}
+	if got, err := RevList(ctx, f.dir, "--all"); err == nil {
+		t.Errorf("RevList(--all) = %v; want an error", got)
+	}
+}
