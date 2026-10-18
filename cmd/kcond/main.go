@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,6 +50,9 @@ the tree:
                               #if region and their AND; with --config, the
                               verdict
   arches PATH...              the architectures that may build each file
+  files [DIR...]              the sources a build compiles under the
+                              directories, with their Kbuild conditions;
+                              with --config, only those it builds
   symbols SYMBOL...           what a build's Kconfig says about symbols
 
 commits:
@@ -192,6 +196,8 @@ func dispatch(ctx context.Context, o opts, cmd string, args []string, out io.Wri
 		return diff(ctx, o, args, out)
 	case "arches":
 		return arches(ctx, o, args, out)
+	case "files":
+		return files(ctx, o, args, out)
 	case "eval":
 		return eval(o, args, out)
 	case "config":
@@ -854,6 +860,80 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 	return print(out, o, rows, func() {
 		for _, r := range rows {
 			fmt.Fprintf(out, "%s\t%s\tvalues %s\tmodular %v\trequires %s\n", r.Symbol, r.Build, r.Values, r.Modular, strings.Join(r.Requires, ","))
+		}
+	})
+}
+
+// oneBuild is the build files reads: buildName's, or x86-64.
+func oneBuild(fsys fs.FS, o opts) (builds.Build, error) {
+	name := buildName(o)
+	if name == "" {
+		name = builds.X86_64Build
+	}
+	b, ok := builds.Named(fsys, name)
+	if !ok {
+		return builds.Build{}, fmt.Errorf("the tree has no %s build", name)
+	}
+	if b.Kbuild == nil {
+		return builds.Build{}, fmt.Errorf("the Makefiles of the %s build could not be read: %w", name, b.Err)
+	}
+	return b, nil
+}
+
+func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
+	fsys, close, err := open(ctx, o)
+	if err != nil {
+		return err
+	}
+	defer close()
+	b, err := oneBuild(fsys, o)
+	if err != nil {
+		return err
+	}
+	// Without directories, the current one: all of the tree at its top.
+	if len(dirs) == 0 {
+		dirs = []string{"."}
+	}
+	for i, d := range dirs {
+		if dirs[i], err = treePath(o, d); err != nil {
+			return err
+		}
+		if _, err := fs.Stat(fsys, dirs[i]); err != nil {
+			return fmt.Errorf("%s: no such file or directory in the tree", dirs[i])
+		}
+	}
+	under := func(p string) bool {
+		for _, d := range dirs {
+			if d == "." || p == d || strings.HasPrefix(p, d+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	rows := []fileCond{}
+	for _, p := range slices.Sorted(maps.Keys(b.Kbuild.Files)) {
+		if !under(p) {
+			continue
+		}
+		e := b.Plain(b.Kbuild.Files[p])
+		if e.IsConst(false) {
+			continue // #included only where the preprocessor drops it
+		}
+		r := fileCond{Path: p, Build: b.Name, Status: builds.StatusBuilt, Kbuild: e.String(), Region: "true", Condition: e.String()}
+		if o.cfg != nil {
+			// An opaque atom leaves the file possible, and scoping an
+			// analysis had better include a file than miss one.
+			v := e.Eval(o.cfg.Config)
+			if v == kcond.False {
+				continue
+			}
+			r.Verdict = change.VerdictName(v)
+		}
+		rows = append(rows, r)
+	}
+	return print(out, o, rows, func() {
+		for _, r := range rows {
+			fmt.Fprintf(out, "%s\t%s\n", r.Path, r.Condition)
 		}
 	})
 }

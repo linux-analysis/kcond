@@ -64,7 +64,7 @@ func TestMessages(t *testing.T) {
 		{[]string{"--tree", dir, "cond", "lib/a.c:1:5"}, "kcond: usage: lib/a.c:1:5: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
 	} {
-		if out, code := capture(t, c.args...); code == 0 || !strings.HasSuffix(out, c.want) {
+		if out, code := capture(t, c.args...); code != 2 || !strings.HasSuffix(out, c.want) {
 			t.Errorf("%v = %q, %d; want %q", c.args, out, code, c.want)
 		}
 	}
@@ -354,14 +354,17 @@ func TestPaths(t *testing.T) {
 	if out, code := capture(t, "--build", "x86_64", "cond", "a.c"); code != 0 || out != want {
 		t.Errorf("cond a.c in lib = %q, %d; want %q", out, code, want)
 	}
-	for _, args := range [][]string{{"cond", "nope.c"}, {"cond", "../../outside.c"}, {"arches", "nope.c"}, {"arches", "Makefile"}} {
-		if out, code := capture(t, args...); code == 0 {
-			t.Errorf("%v = %q, %d; want an error", args, out, code)
+	if out, code := capture(t, "files"); code != 0 || out != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\n" {
+		t.Errorf("files in lib = %q, %d", out, code)
+	}
+	for _, args := range [][]string{{"cond", "nope.c"}, {"cond", "../../outside.c"}, {"arches", "nope.c"}, {"arches", "Makefile"}, {"files", "nope"}} {
+		if out, code := capture(t, args...); code != 2 {
+			t.Errorf("%v = %q, %d; want exit 2", args, out, code)
 		}
 	}
 	// A directory that is not a kernel tree is an error, not an empty answer.
-	for _, args := range [][]string{{"cond", "lib/a.c"}, {"symbols", "A"}, {"arches", "lib/a.c"}} {
-		if out, code := capture(t, append([]string{"--tree", t.TempDir()}, args...)...); code == 0 || !strings.Contains(out, "is not a kernel tree") {
+	for _, args := range [][]string{{"cond", "lib/a.c"}, {"symbols", "A"}, {"arches", "lib/a.c"}, {"files"}} {
+		if out, code := capture(t, append([]string{"--tree", t.TempDir()}, args...)...); code != 2 || !strings.Contains(out, "is not a kernel tree") {
 			t.Errorf("%v outside a tree = %q, %d", args, out, code)
 		}
 	}
@@ -458,5 +461,36 @@ func TestQuiet(t *testing.T) {
 		if out, code := capture(t, c.args...); code != c.code || (c.code < 2 && out != "") {
 			t.Errorf("%v = %q, %d; want exit %d", c.args, out, code, c.code)
 		}
+	}
+}
+
+func TestFiles(t *testing.T) {
+	dir, _ := newKernel(t)
+	if out, code := capture(t, "--tree", dir, "files", "lib"); code != 0 || out != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\n" {
+		t.Errorf("files = %q, %d", out, code)
+	}
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The config picks the build and keeps the files it builds.
+	if out, code := capture(t, "--tree", dir, "--config", cfg, "files"); code != 0 || out != "lib/a.c\tCONFIG_A\n" {
+		t.Errorf("files --config = %q, %d", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "--json", "files", "include"); code != 0 || out != "[]\n" {
+		t.Errorf("files of a directory without sources = %q, %d", out, code)
+	}
+	// A source #included only under #if 0 is never compiled.
+	for name, content := range map[string]string{
+		"lib/Makefile": "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += dead.o\n",
+		"lib/dead.c":   "#if 0\n#include \"never.c\"\n#endif\n",
+		"lib/never.c":  "int never;\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, code := capture(t, "--tree", dir, "files", "lib"); code != 0 || out != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\nlib/dead.c\ttrue\n" {
+		t.Errorf("files with a dead #include = %q, %d", out, code)
 	}
 }
