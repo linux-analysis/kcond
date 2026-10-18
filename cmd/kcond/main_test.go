@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -9,20 +10,12 @@ import (
 	"testing"
 )
 
-// capture runs the command with stdout in a file and returns the output.
+// capture runs the command and returns its output and exit code.
 func capture(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	out, err := os.CreateTemp(t.TempDir(), "out")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	code := run(args, out, out)
-	data, err := os.ReadFile(out.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data), code
+	var out bytes.Buffer
+	code := run(args, &out, &out)
+	return out.String(), code
 }
 
 func TestEvalAndConfig(t *testing.T) {
