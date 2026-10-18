@@ -31,6 +31,7 @@ import (
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/unidiff"
 )
 
 const usage = `usage: kcond [flags] command [args]
@@ -51,9 +52,13 @@ the tree:
   symbols SYMBOL...           what a build's Kconfig says about symbols
 
 commits:
-  diff HASH...                the files a commit changes, the condition of
+  diff HASH|A..B...           the files a commit changes, the condition of
                               its changed lines, its arch label and, with
-                              --config, the verdict
+                              --config, the verdict; a range lists its
+                              commits oldest first, merges left out, with
+                              the Makefiles read at its end; --build or
+                              --config reads that build only, without the
+                              arch label
 
 a .config:
   eval EXPR...                whether conditions hold for the --config file
@@ -485,9 +490,47 @@ type commitResult struct {
 	Verdict   string    `json:"verdict,omitempty"`
 }
 
-func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
-	if len(hashes) == 0 {
-		return fmt.Errorf("%w: diff takes commit hashes", errUsage)
+// commit is a commit diff reads, with the revisions its Makefiles are
+// read at, in order.
+type commit struct {
+	hash string
+	revs []string
+}
+
+// commitsOf lists the commits the arguments name: hashes, and the commits
+// of each A..B range. A hash reads its Makefiles at its parent, then at
+// itself; a range's commits read them at the range's end first, the tree
+// a config that is checked against them was built from, so that the whole
+// range takes one crawl.
+func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit, error) {
+	var commits []commit
+	for _, a := range args {
+		_, end, ok := strings.Cut(a, "..")
+		if !ok {
+			commits = append(commits, commit{a, []string{a + "^", a}})
+			continue
+		}
+		// A...B ends at B too, and A.. at HEAD.
+		if end = strings.TrimPrefix(end, "."); end == "" {
+			end = "HEAD"
+		}
+		hashes, err := gitfs.RevList(ctx, dir, a)
+		if err != nil {
+			return nil, err
+		}
+		if len(hashes) == 0 {
+			fmt.Fprintf(o.stderr, "kcond: %s has no commits\n", a)
+		}
+		for _, h := range hashes {
+			commits = append(commits, commit{h, []string{end, h + "^", h}})
+		}
+	}
+	return commits, nil
+}
+
+func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("%w: diff takes commit hashes or ranges A..B", errUsage)
 	}
 	if o.rev != "" {
 		return fmt.Errorf("%w: diff reads commits; --rev does not apply", errUsage)
@@ -500,35 +543,49 @@ func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 	if o.cfg != nil {
 		cfg = o.cfg.Config
 	}
+	commits, err := commitsOf(ctx, o, dir, args)
+	if err != nil {
+		return err
+	}
 	cat, err := gitfs.NewCatFile(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer cat.Close()
-	// The condition is the one of the build the flags pick, x86-64's
-	// without one.
-	build := buildName(o)
-	var results []commitResult
-	for _, h := range hashes {
-		d, err := gitfs.Diff(ctx, dir, h)
+	// Every commit's files go through one crawl, which reads each
+	// revision once.
+	changes := make([][]change.FileChange, len(commits))
+	unread := make([]bool, len(commits)) // the commit changes nothing the build reads
+	var files []*crawl.File
+	for i, c := range commits {
+		d, err := gitfs.Diff(ctx, dir, c.hash)
 		if err != nil {
 			return err
 		}
+		all := change.Changes(cat, c.hash, d)
 		// A file whose changed lines are all comments decides nothing.
-		changes := slices.DeleteFunc(change.Changes(cat, h, d), func(ch change.FileChange) bool { return !ch.Code })
-		files := make([]*crawl.File, len(changes))
-		for i, ch := range changes {
-			files[i] = &crawl.File{Path: ch.Path, Header: ch.Header, Region: ch.Region, Revs: []string{h + "^", h}}
+		changes[i] = slices.DeleteFunc(slices.Clone(all), func(ch change.FileChange) bool { return !ch.Code })
+		unread[i] = len(changes[i]) == 0 && buildUnread(d, all)
+		for _, ch := range changes[i] {
+			files = append(files, &crawl.File{Path: ch.Path, Header: ch.Header, Region: ch.Region, Revs: c.revs})
 		}
-		found, err := crawl.Resolve(ctx, dir, files, crawl.Options{})
-		if err != nil {
-			return err
-		}
-		r := commitResult{Commit: h}
+	}
+	// The build the flags pick is the only one read, without the arch
+	// label and arches; without one, every build is, and the condition is
+	// x86-64's.
+	build := buildName(o)
+	found, err := crawl.Resolve(ctx, dir, files, crawl.Options{Build: build})
+	if err != nil {
+		return err
+	}
+	results := make([]commitResult, 0, len(commits))
+	for i, c := range commits {
+		r := commitResult{Commit: c.hash}
 		var conds []builds.FileCond
 		var fas []builds.FileArches
-		for i, ch := range changes {
-			res := found[i]
+		for _, ch := range changes[i] {
+			res := found[0]
+			found = found[1:]
 			fc := res.Cond
 			if build != "" && build != builds.X86_64Build && res.Rev != "" {
 				var ok bool
@@ -554,8 +611,11 @@ func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 			fas = append(fas, res.Arches)
 		}
 		e, unknown := builds.Combine(conds)
-		r.Condition, r.Unknown = condText(e), unknown
 		sum := builds.Summarize(fas)
+		if unread[i] {
+			e, unknown, sum.Label = kcond.Const(false), false, "none"
+		}
+		r.Condition, r.Unknown = condText(e), unknown
 		r.Label, r.Arches = sum.Label, sum.Arches
 		if cfg != nil {
 			r.Verdict = change.VerdictName(change.Verdict(e, unknown, cfg))
@@ -563,21 +623,51 @@ func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 		results = append(results, r)
 	}
 	return print(out, o, results, func() {
+		// The commit line carries the summary and the file rows follow
+		// indented, so grep -v '^ ' is the one-line view.
 		for _, r := range results {
-			fmt.Fprintf(out, "%s\n", r.Commit)
-			for _, c := range r.Files {
-				fmt.Fprintf(out, "  %s\t%s\t%s\tregion %s\tarches %s\n", c.Path, c.Status, c.Kbuild, c.Region, strings.Join(c.Arches, ","))
+			cond := r.Condition
+			switch {
+			case cond == "":
+				cond = "unknown"
+			case r.Unknown:
+				cond += " (unknown in part)"
 			}
-			fmt.Fprintf(out, "  condition: %s", r.Condition)
-			if r.Unknown {
-				fmt.Fprint(out, " (unknown in part)")
-			}
-			fmt.Fprintf(out, "\n  label: %s\n", r.Label)
+			line := r.Commit
 			if r.Verdict != "" {
-				fmt.Fprintf(out, "  verdict: %s\n", r.Verdict)
+				line += "\t" + r.Verdict
+			}
+			if build == "" {
+				line += "\t" + r.Label
+			}
+			fmt.Fprintf(out, "%s\t%s\n", line, cond)
+			for _, c := range r.Files {
+				fmt.Fprintf(out, "  %s\t%s\t%s\tregion %s", c.Path, c.Status, c.Kbuild, c.Region)
+				if build == "" {
+					fmt.Fprintf(out, "\tarches %s", strings.Join(c.Arches, ","))
+				}
+				fmt.Fprintln(out)
 			}
 		}
 	})
+}
+
+// buildUnread reports whether the build reads none of the files a diff
+// changes: each is outside the build, or a kernel file whose changed lines
+// are all comments, as changes tells.
+func buildUnread(diff string, changes []change.FileChange) bool {
+	comments := map[string]bool{}
+	for _, ch := range changes {
+		comments[ch.Path] = !ch.Code
+	}
+	for _, f := range unidiff.Files(diff) {
+		for _, p := range []string{f.OldPath, f.NewPath} {
+			if p != "" && !change.OutsideBuild(p) && !comments[p] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // fileArches is what the builds say about one file.
