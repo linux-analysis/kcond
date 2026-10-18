@@ -193,6 +193,14 @@ func TestSymbols(t *testing.T) {
 	}
 }
 
+func TestSymbolsUnknown(t *testing.T) {
+	dir, _ := newKernel(t)
+	out, code := capture(t, "--tree", dir, "--build", "x86_64", "symbols", "NOPE")
+	if code != 0 || out != "CONFIG_NOPE\tx86_64\tunknown: no bool or tristate symbol of this name\n" {
+		t.Errorf("symbols NOPE = %q, %d", out, code)
+	}
+}
+
 // diff leaves out a file whose changed lines are all comments, so that
 // it does not make the condition unknown.
 func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
@@ -495,5 +503,30 @@ func TestFiles(t *testing.T) {
 	}
 	if out, code := capture(t, "--tree", dir, "files", "lib"); code != 0 || out != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\nlib/dead.c\ttrue\n" {
 		t.Errorf("files with a dead #include = %q, %d", out, code)
+	}
+}
+
+func TestSymbolsConfig(t *testing.T) {
+	dir, _ := newKernel(t)
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The config adds each symbol's value and the values of what it
+	// requires.
+	out, code := capture(t, "--tree", dir, "--config", cfg, "symbols", "B", "A")
+	for _, want := range []string{"CONFIG_B\tx86_64\tvalues nmy\tmodular true\tconfig n\trequires CONFIG_A=y\n",
+		"CONFIG_A\tx86_64\tvalues ny\tmodular false\tconfig y\trequires \n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("symbols = %q, %d: want %q", out, code, want)
+		}
+	}
+	// JSON names the requirements the config leaves off.
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_B=m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = capture(t, "--tree", dir, "--config", cfg, "--json", "symbols", "B")
+	if code != 0 || !strings.Contains(out, `"config": "m"`) || !strings.Contains(out, "\"off\": [\n      \"CONFIG_A\"\n    ]") {
+		t.Errorf("symbols --json = %q, %d", out, code)
 	}
 }

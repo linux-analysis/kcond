@@ -53,7 +53,8 @@ the tree:
   files [DIR...]              the sources a build compiles under the
                               directories, with their Kbuild conditions;
                               with --config, only those it builds
-  symbols SYMBOL...           what a build's Kconfig says about symbols
+  symbols SYMBOL...           what a build's Kconfig says about symbols and,
+                              with --config, what the .config sets them to
 
 commits:
   diff HASH|A..B...           the files a commit changes, the condition of
@@ -825,13 +826,25 @@ func config(o opts, args []string, out io.Writer) error {
 	})
 }
 
-// symbolInfo is what a build's Kconfig says about a symbol.
+// symbolInfo is what a build's Kconfig says about a symbol and, with a
+// config, what the config sets it to.
 type symbolInfo struct {
 	Symbol   string   `json:"symbol"`
 	Build    string   `json:"build"`
+	Known    bool     `json:"known"` // false when the Kconfig has no bool or tristate of the name
 	Values   string   `json:"values"`
 	Modular  bool     `json:"modular"`
 	Requires []string `json:"requires"`
+	Config   string   `json:"config,omitempty"` // y, m or n in the --config file
+	Off      []string `json:"off,omitempty"`    // the requirements the config leaves off
+}
+
+// value is what cfg sets a symbol to: y, m or n.
+func value(cfg kcond.Config, name string) string {
+	if v, ok := cfg[name]; ok {
+		return string(v)
+	}
+	return "n"
 }
 
 func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
@@ -850,8 +863,17 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 		}
 		for _, n := range names {
 			n = "CONFIG_" + strings.TrimPrefix(n, "CONFIG_")
-			modular, _ := b.Values.Modular(n)
-			rows = append(rows, symbolInfo{Symbol: n, Build: b.Name, Values: b.Values.Of(n).String(), Modular: modular, Requires: b.Values.Requires(n)})
+			modular, known := b.Values.Modular(n)
+			r := symbolInfo{Symbol: n, Build: b.Name, Known: known, Values: b.Values.Of(n).String(), Modular: modular, Requires: b.Values.Requires(n)}
+			if o.cfg != nil && known {
+				r.Config = value(o.cfg.Config, n)
+				for _, req := range r.Requires {
+					if value(o.cfg.Config, req) == "n" {
+						r.Off = append(r.Off, req)
+					}
+				}
+			}
+			rows = append(rows, r)
 		}
 		return nil
 	})
@@ -860,7 +882,21 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {
-			fmt.Fprintf(out, "%s\t%s\tvalues %s\tmodular %v\trequires %s\n", r.Symbol, r.Build, r.Values, r.Modular, strings.Join(r.Requires, ","))
+			if !r.Known {
+				fmt.Fprintf(out, "%s\t%s\tunknown: no bool or tristate symbol of this name\n", r.Symbol, r.Build)
+				continue
+			}
+			fmt.Fprintf(out, "%s\t%s\tvalues %s\tmodular %v", r.Symbol, r.Build, r.Values, r.Modular)
+			reqs := r.Requires
+			if r.Config != "" {
+				// With a config, each requirement shows its value there.
+				fmt.Fprintf(out, "\tconfig %s", r.Config)
+				reqs = slices.Clone(reqs)
+				for i, req := range reqs {
+					reqs[i] = req + "=" + value(o.cfg.Config, req)
+				}
+			}
+			fmt.Fprintf(out, "\trequires %s\n", strings.Join(reqs, ","))
 		}
 	})
 }
