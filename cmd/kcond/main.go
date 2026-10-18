@@ -6,7 +6,7 @@
 // A tree is read at a git revision (--tree DIR --rev REV) or from a
 // directory (--src DIR). Conditions use the syntax CONFIG_A && (CONFIG_B
 // || !CONFIG_C), with CONFIG_X=y and CONFIG_X=m testing one tristate
-// state.
+// state. Flags may come before or after the command.
 package main
 
 import (
@@ -63,20 +63,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.build, "build", "", "one build only: "+strings.Join(builds.ConfigBuilds, ", "))
 	fs.StringVar(&o.config, "config", "", "a kernel .config, plain or gzip-compressed")
 	fs.BoolVar(&o.json, "json", false, "print JSON")
-	fs.Usage = func() {
-		fmt.Fprint(stderr, usage)
+	fs.Usage = func() {} // a flag error points to -h below
+	printUsage := func(w io.Writer) {
+		fmt.Fprint(w, usage)
+		fs.SetOutput(w)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	// Flags may follow the command and its arguments: the words after
+	// each positional one are parsed again.
+	err := fs.Parse(args)
+	var words []string
+	for err == nil && fs.NArg() > 0 {
+		words = append(words, fs.Arg(0))
+		err = fs.Parse(fs.Args()[1:])
+	}
+	switch {
+	case errors.Is(err, flag.ErrHelp), err == nil && len(words) > 0 && words[0] == "help":
+		printUsage(stdout)
+		return 0
+	case err != nil:
+		fmt.Fprintln(stderr, "run kcond -h for usage")
 		return 2
 	}
-	if fs.NArg() == 0 {
-		fs.Usage()
+	if len(words) == 0 {
+		printUsage(stderr)
+		return 2
+	}
+	if o.build != "" && !slices.Contains(builds.ConfigBuilds, o.build) {
+		fmt.Fprintf(stderr, "kcond: --build takes one of %s\n", strings.Join(builds.ConfigBuilds, ", "))
 		return 2
 	}
 	// Ctrl-C kills the process: a crawl it interrupted would read as
 	// files not built.
-	err := dispatch(context.Background(), o, fs.Arg(0), fs.Args()[1:], stdout)
+	err = dispatch(context.Background(), o, words[0], words[1:], stdout)
 	switch {
 	case errors.Is(err, errUsage):
 		fmt.Fprintln(stderr, "kcond:", message(err))
@@ -138,9 +157,6 @@ func open(ctx context.Context, o opts) (fsys fs.FS, close func(), err error) {
 func each(fsys fs.FS, o opts, f func(builds.Build) error) error {
 	if o.build == "" {
 		return builds.Each(fsys, nil, f)
-	}
-	if !slices.Contains(builds.ConfigBuilds, o.build) {
-		return fmt.Errorf("%w: --build takes one of %s", errUsage, strings.Join(builds.ConfigBuilds, ", "))
 	}
 	b, ok := builds.Named(fsys, o.build)
 	if !ok {
@@ -322,6 +338,9 @@ type fileArches struct {
 func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("%w: arches takes paths", errUsage)
+	}
+	if o.build != "" {
+		return fmt.Errorf("%w: arches reads every build", errUsage)
 	}
 	fsys, close, err := open(ctx, o)
 	if err != nil {
