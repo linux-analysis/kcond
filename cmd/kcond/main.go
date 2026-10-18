@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"slices"
@@ -52,7 +53,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string, stdout, stderr *os.File) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	var o opts
 	fs := flag.NewFlagSet("kcond", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -100,7 +101,7 @@ func message(err error) string {
 
 var errUsage = errors.New("usage")
 
-func dispatch(ctx context.Context, o opts, cmd string, args []string, out *os.File) error {
+func dispatch(ctx context.Context, o opts, cmd string, args []string, out io.Writer) error {
 	switch cmd {
 	case "cond":
 		return cond(ctx, o, args, out)
@@ -148,7 +149,7 @@ func each(fsys fs.FS, o opts, f func(builds.Build) error) error {
 	return f(b)
 }
 
-func print(out *os.File, o opts, v any, text func()) error {
+func print(out io.Writer, o opts, v any, text func()) error {
 	if !o.json {
 		text()
 		return nil
@@ -174,7 +175,7 @@ type fileCond struct {
 	Kbuild string `json:"kbuild,omitempty"`
 }
 
-func cond(ctx context.Context, o opts, paths []string, out *os.File) error {
+func cond(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("%w: cond takes paths", errUsage)
 	}
@@ -227,7 +228,7 @@ type commitResult struct {
 	Verdict   string    `json:"verdict,omitempty"`
 }
 
-func diff(ctx context.Context, o opts, hashes []string, out *os.File) error {
+func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 	if len(hashes) == 0 {
 		return fmt.Errorf("%w: diff takes commit hashes", errUsage)
 	}
@@ -319,7 +320,7 @@ type fileArches struct {
 	Always  []string `json:"always"`
 }
 
-func arches(ctx context.Context, o opts, paths []string, out *os.File) error {
+func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("%w: arches takes paths", errUsage)
 	}
@@ -372,7 +373,7 @@ func readConfig(path string) (dotconfig.File, error) {
 	return dotconfig.Read(data)
 }
 
-func eval(o opts, exprs []string, out *os.File) error {
+func eval(o opts, exprs []string, out io.Writer) error {
 	if o.config == "" || len(exprs) == 0 {
 		return fmt.Errorf("%w: eval takes --config FILE and conditions", errUsage)
 	}
@@ -399,7 +400,7 @@ func eval(o opts, exprs []string, out *os.File) error {
 	})
 }
 
-func config(o opts, args []string, out *os.File) error {
+func config(o opts, args []string, out io.Writer) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: config takes one file", errUsage)
 	}
@@ -426,7 +427,7 @@ type symbolInfo struct {
 	Requires []string `json:"requires"`
 }
 
-func symbols(ctx context.Context, o opts, names []string, out *os.File) error {
+func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 	if len(names) == 0 {
 		return fmt.Errorf("%w: symbols takes symbol names", errUsage)
 	}
