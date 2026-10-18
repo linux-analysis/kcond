@@ -1,0 +1,21 @@
+both	CONFIG_A=y CONFIG_B=m	x.o	builtin
+both	CONFIG_A=m CONFIG_B=y	x.o	builtin
+both	CONFIG_A=m CONFIG_B=m	x.o	module
+fan	CONFIG_A=y CONFIG_B=y	fan_core.o	builtin
+fan	CONFIG_A=y CONFIG_B=y	fan_hwmon.o	builtin
+fan	CONFIG_A=y CONFIG_B=m	fan_core.o	builtin
+fan	CONFIG_A=m CONFIG_B=y	fan_core.o	module
+fan	CONFIG_A=m CONFIG_B=y	fan_hwmon.o	module
+fan	CONFIG_A=m CONFIG_B=m	fan_core.o	module
+fan	CONFIG_A=m CONFIG_B=m	fan_hwmon.o	module
+helper	CONFIG_C=y	core.o	builtin
+helper	CONFIG_C=y	nommu_free.o	builtin
+helper	CONFIG_C=m	core.o	builtin
+intel	CONFIG_X=y	hid.o	builtin
+intel	CONFIG_X=m	hid.o	module
+lib	CONFIG_L=y	l.o	builtin
+lib	CONFIG_L=m	l.o	builtin
+subst	CONFIG_A=y CONFIG_B=m	br.o	builtin
+subst	CONFIG_A=y CONFIG_B=m	br_nf_core.o	builtin
+subst	CONFIG_A=m CONFIG_B=m	br.o	module
+subst	CONFIG_A=m CONFIG_B=m	br_nf_core.o	module
