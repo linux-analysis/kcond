@@ -98,8 +98,9 @@ func git(t *testing.T, dir string, args ...string) string {
 
 // newKernel builds a kernel tree of two commits with an x86 and an arm64
 // build: lib/a.c under CONFIG_A with an #ifdef CONFIG_B block, lib/b.c
-// under the tristate CONFIG_B, and a fix that changes a line of a.c and
-// only a comment of b.c. It returns the tree and the fix's hash.
+// under the tristate CONFIG_B, lib/c.c and arch/arm64/lib/z.c that no
+// Makefile lists, a header, and a fix that changes a line of a.c and only
+// a comment of b.c. It returns the tree and the fix's hash.
 func newKernel(t *testing.T) (dir, fix string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -122,12 +123,16 @@ func newKernel(t *testing.T) (dir, fix string) {
 		return git(t, dir, "rev-parse", "HEAD")
 	}
 	write(map[string]string{
+		"Kbuild":             "# top-level objects\n",
 		"Makefile":           "core-y := lib/\n",
 		"arch/x86/Kconfig":   "config X86\n\tdef_bool y\n\nconfig MODULES\n\tbool \"m\"\n\nconfig A\n\tbool \"a\"\n\nconfig B\n\ttristate \"b\"\n\tdepends on A\n",
 		"arch/arm64/Kconfig": "config ARM64\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n",
 		"lib/Makefile":       "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\n",
 		"lib/a.c":            "int a;\n#ifdef CONFIG_B\nint ab;\n#endif\n",
 		"lib/b.c":            "/* b */\nint b;\n",
+		"lib/c.c":            "int c;\n",
+		"arch/arm64/lib/z.c": "int z;\n",
+		"include/linux/x.h":  "int x(void);\n",
 	})
 	fix = write(map[string]string{"lib/a.c": "int a = 1;\n#ifdef CONFIG_B\nint ab;\n#endif\n", "lib/b.c": "/* the b */\nint b;\n"})
 	return dir, fix
@@ -142,12 +147,19 @@ func TestCond(t *testing.T) {
 			t.Errorf("cond = %q, %d: want %q", out, code, want)
 		}
 	}
-	// A plain directory reads the same; without --build every build has
-	// a row.
-	out, code = capture(t, "--src", dir, "cond", "lib/a.c")
-	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/a.c\ti386\tbuilt\tCONFIG_A\n", "lib/a.c\tarm64\tbuilt\tCONFIG_A\n"} {
-		if code != 0 || !strings.Contains(out, want) {
-			t.Errorf("cond --src = %q, %d: want %q", out, code, want)
+	// The checkout reads the same without --rev, and so does a plain copy
+	// of it; without --build every build has a row.
+	plain := filepath.Join(t.TempDir(), "src")
+	git(t, dir, "clone", "-q", dir, plain)
+	if err := os.RemoveAll(filepath.Join(plain, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	for _, tree := range []string{dir, plain} {
+		out, code = capture(t, "--tree", tree, "cond", "lib/a.c")
+		for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/a.c\ti386\tbuilt\tCONFIG_A\n", "lib/a.c\tarm64\tbuilt\tCONFIG_A\n"} {
+			if code != 0 || !strings.Contains(out, want) {
+				t.Errorf("cond --tree %s = %q, %d: want %q", tree, out, code, want)
+			}
 		}
 	}
 	if _, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "mips", "cond", "lib/a.c"); code != 2 {
@@ -206,5 +218,47 @@ func TestFlagsAfterCommand(t *testing.T) {
 func TestVersion(t *testing.T) {
 	if out, code := capture(t, "--version"); code != 0 || out != "kcond dev\n" {
 		t.Errorf("--version = %q, %d", out, code)
+	}
+}
+
+func TestTreeDefault(t *testing.T) {
+	dir, _ := newKernel(t)
+	t.Chdir(dir)
+	if out, code := capture(t, "cond", "lib/a.c", "--build", "x86_64"); code != 0 || !strings.Contains(out, "lib/a.c\tx86_64\tbuilt\tCONFIG_A\n") {
+		t.Errorf("cond in the tree = %q, %d", out, code)
+	}
+	if _, code := capture(t, "--rev", "HEAD", "diff", "HEAD"); code != 2 {
+		t.Errorf("diff --rev exited %d, want 2", code)
+	}
+	t.Chdir(t.TempDir())
+	if _, code := capture(t, "cond", "lib/a.c"); code != 2 {
+		t.Errorf("cond outside a tree exited %d, want 2", code)
+	}
+}
+
+// Paths are relative to the current directory in the tree, as git reads
+// them, or absolute; a path that names no file of the tree is an error.
+func TestPaths(t *testing.T) {
+	dir, _ := newKernel(t)
+	want := "lib/a.c\tx86_64\tbuilt\tCONFIG_A\n"
+	for _, p := range []string{"./lib/a.c", "lib/../lib/a.c", filepath.Join(dir, "lib", "a.c")} {
+		if out, code := capture(t, "--tree", dir, "--build", "x86_64", "cond", p); code != 0 || out != want {
+			t.Errorf("cond %s = %q, %d; want %q", p, out, code, want)
+		}
+	}
+	t.Chdir(filepath.Join(dir, "lib"))
+	if out, code := capture(t, "--build", "x86_64", "cond", "a.c"); code != 0 || out != want {
+		t.Errorf("cond a.c in lib = %q, %d; want %q", out, code, want)
+	}
+	for _, args := range [][]string{{"cond", "nope.c"}, {"cond", "../../outside.c"}, {"arches", "nope.c"}, {"arches", "Makefile"}} {
+		if out, code := capture(t, args...); code == 0 {
+			t.Errorf("%v = %q, %d; want an error", args, out, code)
+		}
+	}
+	// A directory that is not a kernel tree is an error, not an empty answer.
+	for _, args := range [][]string{{"cond", "lib/a.c"}, {"symbols", "A"}, {"arches", "lib/a.c"}} {
+		if out, code := capture(t, append([]string{"--tree", t.TempDir()}, args...)...); code == 0 || !strings.Contains(out, "is not a kernel tree") {
+			t.Errorf("%v outside a tree = %q, %d", args, out, code)
+		}
 	}
 }
