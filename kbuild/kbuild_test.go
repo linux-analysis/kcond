@@ -1399,7 +1399,7 @@ $(obj)/vgettimeofday-64.o: %-64.o: %.c FORCE
 // TestKbuildSemantics checks the crawler against Kbuild on the minimized
 // Makefiles of testdata/kbuild: whether each object is built into the
 // kernel, into a module or not at all, in each configuration a Makefile's
-// header lists, as research/kconfig/kbuild-check.sh records it from
+// header lists, as testdata/kbuild/check.sh records it from
 // scripts/Makefile.build of v7.2.
 func TestKbuildSemantics(t *testing.T) {
 	data, err := os.ReadFile("testdata/kbuild/expected.txt")
