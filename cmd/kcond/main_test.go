@@ -202,3 +202,9 @@ func TestFlagsAfterCommand(t *testing.T) {
 		t.Errorf("arches --build exited %d, want 2", code)
 	}
 }
+
+func TestVersion(t *testing.T) {
+	if out, code := capture(t, "--version"); code != 0 || out != "kcond dev\n" {
+		t.Errorf("--version = %q, %d", out, code)
+	}
+}
