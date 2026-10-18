@@ -46,8 +46,11 @@ flags:
 // opts are the flags every command takes.
 type opts struct {
 	tree, rev, src, build, config string
-	json                          bool
+	json, version                 bool
 }
+
+// version is what the build stamps with -X main.version.
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -63,6 +66,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.build, "build", "", "one build only: "+strings.Join(builds.ConfigBuilds, ", "))
 	fs.StringVar(&o.config, "config", "", "a kernel .config, plain or gzip-compressed")
 	fs.BoolVar(&o.json, "json", false, "print JSON")
+	fs.BoolVar(&o.version, "version", false, "print the version and exit")
 	fs.Usage = func() {} // a flag error points to -h below
 	printUsage := func(w io.Writer) {
 		fmt.Fprint(w, usage)
@@ -84,6 +88,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case err != nil:
 		fmt.Fprintln(stderr, "run kcond -h for usage")
 		return 2
+	}
+	if o.version {
+		fmt.Fprintln(stdout, "kcond", version)
+		return 0
 	}
 	if len(words) == 0 {
 		printUsage(stderr)
