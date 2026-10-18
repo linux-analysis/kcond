@@ -64,13 +64,15 @@ a .config:
   eval EXPR...                whether conditions hold for the --config file
   config FILE                 what a .config says: build, version, options
 
+exit status: 0; 1 with -q when something does not apply; 2 on an error.
+
 flags:
 `
 
 // opts are the flags every command takes.
 type opts struct {
 	tree, rev, build, config string
-	json, version            bool
+	json, version, quiet     bool
 	cfg                      *dotconfig.File // the --config file, read once
 	stderr                   io.Writer
 }
@@ -92,6 +94,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.config, "config", "", "a kernel .config, plain or gzip-compressed")
 	fs.BoolVar(&o.json, "json", false, "print JSON")
 	fs.BoolVar(&o.version, "version", false, "print the version and exit")
+	fs.BoolVar(&o.quiet, "q", false, "print nothing; exit 1 unless every condition or commit applies")
 	fs.Usage = func() {} // a flag error points to -h below
 	printUsage := func(w io.Writer) {
 		fmt.Fprint(w, usage)
@@ -130,23 +133,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 		f, err := readConfig(o.config)
 		if err != nil {
 			fmt.Fprintln(stderr, "kcond:", err)
-			return 1
+			return 2
 		}
 		if f.Partial {
 			fmt.Fprintln(stderr, "kcond: the .config has no header and few options off, like a defconfig; the options it leaves out count as off")
 		}
 		o.cfg = &f
 	}
+	if o.quiet && (o.cfg == nil || !slices.Contains([]string{"cond", "diff", "eval"}, words[0])) {
+		fmt.Fprintln(stderr, "kcond: -q needs a verdict: eval, or cond or diff with --config")
+		return 2
+	}
 	// Ctrl-C kills the process: a crawl it interrupted would read as
 	// files not built.
 	err = dispatch(context.Background(), o, words[0], words[1:], stdout)
 	switch {
-	case errors.Is(err, errUsage):
-		fmt.Fprintln(stderr, "kcond:", message(err))
-		return 2
+	case errors.Is(err, errNo):
+		return 1
 	case err != nil:
 		fmt.Fprintln(stderr, "kcond:", message(err))
-		return 1
+		return 2
 	}
 	return 0
 }
@@ -163,6 +169,20 @@ func message(err error) string {
 }
 
 var errUsage = errors.New("usage")
+
+// errNo is what a command returns under -q when something does not apply.
+var errNo = errors.New("does not apply")
+
+// quiet is the result of -q: errNo unless every one of the n verdicts is
+// applies.
+func quiet(n int, verdict func(i int) string) error {
+	for i := range n {
+		if verdict(i) != change.Applies {
+			return errNo
+		}
+	}
+	return nil
+}
 
 func dispatch(ctx context.Context, o opts, cmd string, args []string, out io.Writer) error {
 	switch cmd {
@@ -447,6 +467,9 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if o.quiet {
+		return quiet(len(rows), func(i int) string { return rows[i].Verdict })
+	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {
 			p, cond := r.Path, r.Condition
@@ -622,6 +645,9 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 		}
 		results = append(results, r)
 	}
+	if o.quiet {
+		return quiet(len(results), func(i int) string { return results[i].Verdict })
+	}
 	return print(out, o, results, func() {
 		// The commit line carries the summary and the file rows follow
 		// indented, so grep -v '^ ' is the one-line view.
@@ -764,6 +790,9 @@ func eval(o opts, exprs []string, out io.Writer) error {
 			return err
 		}
 		rows = append(rows, result{e.String(), change.VerdictName(e.Eval(o.cfg.Config))})
+	}
+	if o.quiet {
+		return quiet(len(rows), func(i int) string { return rows[i].Verdict })
 	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {

@@ -432,3 +432,34 @@ func TestDiffRange(t *testing.T) {
 		}
 	}
 }
+
+func TestQuiet(t *testing.T) {
+	dir, fix := newKernel(t)
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// -q prints nothing and exits 1 unless everything applies; unknown
+	// does not apply.
+	for _, c := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"--config", cfg, "-q", "eval", "CONFIG_A"}, 0},
+		{[]string{"--config", cfg, "-q", "eval", "CONFIG_A", "CONFIG_B"}, 1},
+		{[]string{"--config", cfg, "-q", "eval", `"defined(FOO)"`}, 1},
+		{[]string{"--tree", dir, "--config", cfg, "-q", "diff", fix}, 0},
+		{[]string{"--tree", dir, "--config", cfg, "-q", "cond", "lib/a.c", "lib/b.c"}, 1},
+		{[]string{"--tree", dir, "--config", cfg, "-q", "cond", "lib/a.c:1"}, 0},
+		// Nothing tells which builds include a header outside any #if.
+		{[]string{"--tree", dir, "--config", cfg, "-q", "cond", "include/linux/x.h"}, 1},
+		// -q needs a verdict; errors exit 2.
+		{[]string{"--tree", dir, "-q", "diff", fix}, 2},
+		{[]string{"--config", cfg, "-q", "config", cfg}, 2},
+		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, 2},
+	} {
+		if out, code := capture(t, c.args...); code != c.code || (c.code < 2 && out != "") {
+			t.Errorf("%v = %q, %d; want exit %d", c.args, out, code, c.code)
+		}
+	}
+}
