@@ -74,32 +74,93 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// diff leaves out a file whose changed lines are all comments, so that
-// it does not make the condition unknown.
-func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
+// newKernel builds a kernel tree of two commits with an x86 and an arm64
+// build: lib/a.c under CONFIG_A with an #ifdef CONFIG_B block, lib/b.c
+// under the tristate CONFIG_B, and a fix that changes a line of a.c and
+// only a comment of b.c. It returns the tree and the fix's hash.
+func newKernel(t *testing.T) (dir, fix string) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	kernel := filepath.Join(t.TempDir(), "linux")
-	git(t, t.TempDir(), "init", "-q", "-b", "master", kernel)
+	dir = filepath.Join(t.TempDir(), "linux")
+	git(t, t.TempDir(), "init", "-q", "-b", "master", dir)
 	write := func(files map[string]string) string {
 		for name, content := range files {
-			p := filepath.Join(kernel, name)
+			p := filepath.Join(dir, name)
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			git(t, kernel, "add", name)
+			git(t, dir, "add", name)
 		}
-		git(t, kernel, "commit", "-q", "-m", "change")
-		return git(t, kernel, "rev-parse", "HEAD")
+		git(t, dir, "commit", "-q", "-m", "change")
+		return git(t, dir, "rev-parse", "HEAD")
 	}
-	write(map[string]string{"Makefile": "core-y := lib/\n", "arch/x86/Kconfig": "config X86\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n",
-		"lib/Makefile": "obj-$(CONFIG_A) += a.o\n", "lib/a.c": "int a;\n", "lib/b.c": "/* b */\nint b;\n"})
-	fix := write(map[string]string{"lib/a.c": "int a = 1;\n", "lib/b.c": "/* the b */\nint b;\n"})
-	out, code := capture(t, "--tree", kernel, "--json", "diff", fix)
+	write(map[string]string{
+		"Makefile":           "core-y := lib/\n",
+		"arch/x86/Kconfig":   "config X86\n\tdef_bool y\n\nconfig MODULES\n\tbool \"m\"\n\nconfig A\n\tbool \"a\"\n\nconfig B\n\ttristate \"b\"\n\tdepends on A\n",
+		"arch/arm64/Kconfig": "config ARM64\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n",
+		"lib/Makefile":       "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\n",
+		"lib/a.c":            "int a;\n#ifdef CONFIG_B\nint ab;\n#endif\n",
+		"lib/b.c":            "/* b */\nint b;\n",
+	})
+	fix = write(map[string]string{"lib/a.c": "int a = 1;\n#ifdef CONFIG_B\nint ab;\n#endif\n", "lib/b.c": "/* the b */\nint b;\n"})
+	return dir, fix
+}
+
+func TestCond(t *testing.T) {
+	dir, _ := newKernel(t)
+	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "lib/a.c", "lib/b.c", "lib/c.c", "include/linux/x.h")
+	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/b.c\tx86_64\tbuilt\tCONFIG_B\n",
+		"lib/c.c\tx86_64\tunlisted\t\n", "include/linux/x.h\tx86_64\theader\t\n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("cond = %q, %d: want %q", out, code, want)
+		}
+	}
+	// A plain directory reads the same; without --build every build has
+	// a row.
+	out, code = capture(t, "--src", dir, "cond", "lib/a.c")
+	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/a.c\ti386\tbuilt\tCONFIG_A\n", "lib/a.c\tarm64\tbuilt\tCONFIG_A\n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("cond --src = %q, %d: want %q", out, code, want)
+		}
+	}
+	if _, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "mips", "cond", "lib/a.c"); code != 2 {
+		t.Errorf("an unknown build exited %d, want 2", code)
+	}
+}
+
+func TestArches(t *testing.T) {
+	dir, _ := newKernel(t)
+	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "arches", "lib/a.c", "arch/arm64/lib/z.c")
+	// z.c is another arch's on x86 and unlisted on arm64, where it may
+	// still be built by rules the crawl does not follow, so arm64 is
+	// possible and unknown.
+	for _, want := range []string{"lib/a.c\tarches x86,arm64\tunknown \talways \n", "arch/arm64/lib/z.c\tarches arm64\tunknown arm64\talways \n", "label: generic\n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("arches = %q, %d: want %q", out, code, want)
+		}
+	}
+}
+
+func TestSymbols(t *testing.T) {
+	dir, _ := newKernel(t)
+	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "symbols", "B", "CONFIG_A")
+	for _, want := range []string{"CONFIG_B\tx86_64\tvalues nmy\tmodular true\trequires CONFIG_A\n", "CONFIG_A\tx86_64\tvalues ny\tmodular false\trequires \n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("symbols = %q, %d: want %q", out, code, want)
+		}
+	}
+}
+
+// diff leaves out a file whose changed lines are all comments, so that
+// it does not make the condition unknown.
+func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
+	dir, fix := newKernel(t)
+	out, code := capture(t, "--tree", dir, "--json", "diff", fix)
 	var res []commitResult
 	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 {
 		t.Fatalf("diff = %q, %d", out, code)
