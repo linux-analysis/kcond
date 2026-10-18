@@ -62,6 +62,8 @@ func TestMessages(t *testing.T) {
 		want string
 	}{
 		{[]string{"-x"}, "flag provided but not defined: -x\nrun kcond -h for usage\n"},
+		{[]string{"--tree", dir, "cond", "lib/a.c:5-"}, "kcond: usage: lib/a.c:5-: lines are LINE or LINE-LINE, from 1\n"},
+		{[]string{"--tree", dir, "cond", "lib/a.c:1:5"}, "kcond: usage: lib/a.c:1:5: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
 	} {
 		if out, code := capture(t, c.args...); code == 0 || !strings.HasSuffix(out, c.want) {
@@ -141,8 +143,8 @@ func newKernel(t *testing.T) (dir, fix string) {
 func TestCond(t *testing.T) {
 	dir, _ := newKernel(t)
 	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "lib/a.c", "lib/b.c", "lib/c.c", "include/linux/x.h")
-	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/b.c\tx86_64\tbuilt\tCONFIG_B\n",
-		"lib/c.c\tx86_64\tunlisted\t\n", "include/linux/x.h\tx86_64\theader\t\n"} {
+	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n", "lib/b.c\tx86_64\tbuilt\tCONFIG_B\ttrue\tCONFIG_B\n",
+		"lib/c.c\tx86_64\tunlisted\t\ttrue\tunknown\n", "include/linux/x.h\tx86_64\theader\t\ttrue\tunknown\n"} {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Errorf("cond = %q, %d: want %q", out, code, want)
 		}
@@ -156,7 +158,7 @@ func TestCond(t *testing.T) {
 	}
 	for _, tree := range []string{dir, plain} {
 		out, code = capture(t, "--tree", tree, "cond", "lib/a.c")
-		for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\n", "lib/a.c\ti386\tbuilt\tCONFIG_A\n", "lib/a.c\tarm64\tbuilt\tCONFIG_A\n"} {
+		for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n", "lib/a.c\ti386\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n", "lib/a.c\tarm64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n"} {
 			if code != 0 || !strings.Contains(out, want) {
 				t.Errorf("cond --tree %s = %q, %d: want %q", tree, out, code, want)
 			}
@@ -204,6 +206,68 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	}
 }
 
+// diff judges a commit by the build --build names or the --config file is
+// for: a change to arm64 code applies to an arm64 config.
+func TestDiffBuild(t *testing.T) {
+	dir, _ := newKernel(t)
+	commit := func(files map[string]string) string {
+		for name, content := range files {
+			p := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "add", name)
+		}
+		git(t, dir, "commit", "-q", "-m", "arm64")
+		return git(t, dir, "rev-parse", "HEAD")
+	}
+	commit(map[string]string{
+		"Makefile":                   "core-y := lib/\ninclude $(srctree)/arch/$(SRCARCH)/Makefile\n",
+		"arch/x86/Makefile":          "\n",
+		"arch/arm64/Makefile":        "core-y += arch/arm64/kernel/\n",
+		"arch/arm64/kernel/Makefile": "obj-y += cpu.o\n",
+		"arch/arm64/kernel/cpu.c":    "int cpu;\n",
+	})
+	fix := commit(map[string]string{"arch/arm64/kernel/cpu.c": "int cpu = 1;\n"})
+	arm64, x86 := filepath.Join(t.TempDir(), "arm64.config"), filepath.Join(t.TempDir(), "x86.config")
+	if err := os.WriteFile(arm64, []byte("# Linux/arm64 6.12.0 Kernel Configuration\nCONFIG_ARM64=y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(x86, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args    []string
+		verdict string
+	}{
+		{[]string{"--config", arm64}, "applies"},
+		{[]string{"--config", x86}, "not applicable"},
+		{[]string{"--config", arm64, "--build", "x86_64"}, "not applicable"},
+	} {
+		out, code := capture(t, append([]string{"--tree", dir, "--json", "diff", fix}, c.args...)...)
+		var res []commitResult
+		if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || res[0].Verdict != c.verdict || res[0].Label != "arm64" {
+			t.Errorf("diff %v = %q, %d; want %s on arm64", c.args, out, code, c.verdict)
+		}
+	}
+}
+
+// A build whose Makefiles cannot be read says why on stderr.
+func TestBuildErrors(t *testing.T) {
+	dir, _ := newKernel(t)
+	git(t, dir, "rm", "-q", "Makefile")
+	git(t, dir, "commit", "-q", "-m", "no Makefile")
+	var out, errs bytes.Buffer
+	code := run([]string{"--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "lib/a.c"}, &out, &errs)
+	if code != 0 || !strings.Contains(out.String(), "lib/a.c\tx86_64\tunlisted") ||
+		!strings.HasPrefix(errs.String(), "kcond: the x86_64 build: kbuild: no top-level Makefile") {
+		t.Errorf("cond = %q, %q, %d; want unlisted, with the reason on stderr", out.String(), errs.String(), code)
+	}
+}
+
 func TestFlagsAfterCommand(t *testing.T) {
 	dir, _ := newKernel(t)
 	out, code := capture(t, "cond", "lib/a.c", "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "--json")
@@ -224,7 +288,7 @@ func TestVersion(t *testing.T) {
 func TestTreeDefault(t *testing.T) {
 	dir, _ := newKernel(t)
 	t.Chdir(dir)
-	if out, code := capture(t, "cond", "lib/a.c", "--build", "x86_64"); code != 0 || !strings.Contains(out, "lib/a.c\tx86_64\tbuilt\tCONFIG_A\n") {
+	if out, code := capture(t, "cond", "lib/a.c", "--build", "x86_64"); code != 0 || !strings.Contains(out, "lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n") {
 		t.Errorf("cond in the tree = %q, %d", out, code)
 	}
 	if _, code := capture(t, "--rev", "HEAD", "diff", "HEAD"); code != 2 {
@@ -240,7 +304,7 @@ func TestTreeDefault(t *testing.T) {
 // them, or absolute; a path that names no file of the tree is an error.
 func TestPaths(t *testing.T) {
 	dir, _ := newKernel(t)
-	want := "lib/a.c\tx86_64\tbuilt\tCONFIG_A\n"
+	want := "lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n"
 	for _, p := range []string{"./lib/a.c", "lib/../lib/a.c", filepath.Join(dir, "lib", "a.c")} {
 		if out, code := capture(t, "--tree", dir, "--build", "x86_64", "cond", p); code != 0 || out != want {
 			t.Errorf("cond %s = %q, %d; want %q", p, out, code, want)
@@ -259,6 +323,32 @@ func TestPaths(t *testing.T) {
 	for _, args := range [][]string{{"cond", "lib/a.c"}, {"symbols", "A"}, {"arches", "lib/a.c"}} {
 		if out, code := capture(t, append([]string{"--tree", t.TempDir()}, args...)...); code == 0 || !strings.Contains(out, "is not a kernel tree") {
 			t.Errorf("%v outside a tree = %q, %d", args, out, code)
+		}
+	}
+}
+
+func TestCondLines(t *testing.T) {
+	dir, _ := newKernel(t)
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The config picks the build; a line range adds the #if region of the
+	// lines (#ifdef CONFIG_B holds for a built-in B) and the verdict on
+	// their condition.
+	out, code := capture(t, "--tree", dir, "--config", cfg, "cond", "lib/a.c:3", "lib/a.c:1-4", "lib/a.c")
+	for _, want := range []string{"lib/a.c:3\tx86_64\tbuilt\tCONFIG_A\tCONFIG_B=y\tCONFIG_A && CONFIG_B=y\tnot applicable\n",
+		"lib/a.c:1-4\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\tapplies\n", "lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\tapplies\n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("cond = %q, %d: want %q", out, code, want)
+		}
+	}
+	if strings.Contains(out, "arm64") {
+		t.Errorf("cond read a build the config is not for: %q", out)
+	}
+	for _, bad := range []string{"lib/a.c:9", "lib/a.c:0", "lib/a.c:3-2", "Makefile"} {
+		if _, code := capture(t, "--tree", dir, "cond", bad); code == 0 {
+			t.Errorf("cond %s exited 0", bad)
 		}
 	}
 }
