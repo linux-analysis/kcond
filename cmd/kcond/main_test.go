@@ -48,6 +48,28 @@ func TestEvalAndConfig(t *testing.T) {
 	}
 }
 
+func TestMessages(t *testing.T) {
+	dir, _ := newKernel(t)
+	var out, errs bytes.Buffer
+	if code := run([]string{"-h"}, &out, &errs); code != 0 || !strings.HasPrefix(out.String(), "usage: kcond") || errs.Len() != 0 {
+		t.Errorf("-h = %q, %q, %d", out.String(), errs.String(), code)
+	}
+	if out, code := capture(t, "help"); code != 0 || !strings.HasPrefix(out, "usage: kcond") {
+		t.Errorf("help = %q, %d", out, code)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-x"}, "flag provided but not defined: -x\nrun kcond -h for usage\n"},
+		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
+	} {
+		if out, code := capture(t, c.args...); code == 0 || !strings.HasSuffix(out, c.want) {
+			t.Errorf("%v = %q, %d; want %q", c.args, out, code, c.want)
+		}
+	}
+}
+
 // TestMain drops the GIT_ variables of the calling environment: under git
 // rebase --exec, GIT_DIR points the tests' git commands at the repository
 // being rebased.
@@ -167,5 +189,16 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	}
 	if r := res[0]; len(r.Files) != 1 || r.Files[0].Path != "lib/a.c" || r.Unknown || r.Condition != "CONFIG_A" {
 		t.Errorf("diff = %+v", r)
+	}
+}
+
+func TestFlagsAfterCommand(t *testing.T) {
+	dir, _ := newKernel(t)
+	out, code := capture(t, "cond", "lib/a.c", "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "--json")
+	if code != 0 || !strings.Contains(out, `"kbuild": "CONFIG_A"`) {
+		t.Errorf("cond with flags after = %q, %d", out, code)
+	}
+	if _, code := capture(t, "arches", "lib/a.c", "--tree", dir, "--rev", "HEAD", "--build", "x86_64"); code != 2 {
+		t.Errorf("arches --build exited %d, want 2", code)
 	}
 }
