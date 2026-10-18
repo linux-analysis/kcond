@@ -226,29 +226,7 @@ func (t *Tree) Close() error { return t.cat.Close() }
 // one of strs. git grep reads the files in parallel, far faster than
 // reading each through ReadFile.
 func (t *Tree) Grep(strs []string, globs ...string) ([]string, error) {
-	args := []string{"grep", "--no-color", "-l", "-z", "-I", "-F"}
-	for _, s := range strs {
-		args = append(args, "-e", s)
-	}
-	args = append(append(args, t.rev, "--"), globs...)
-	out, err := run(t.ctx, t.dir, args...)
-	// git grep exits with 1 for an unreadable object too, saying so.
-	var gerr *Error
-	var exit *exec.ExitError
-	if errors.As(err, &gerr) && gerr.Stderr == "" && errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return nil, nil // nothing matched
-	}
-	if err != nil {
-		return nil, err
-	}
-	var paths []string
-	for rec := range bytes.SplitSeq(out, []byte{0}) {
-		if p, ok := strings.CutPrefix(string(rec), t.rev+":"); ok {
-			paths = append(paths, p)
-		}
-	}
-	slices.Sort(paths)
-	return paths, nil
+	return grep(t.ctx, t.dir, t.rev, strs, globs)
 }
 
 func (t *Tree) pathErr(op, name string, err error) error {
@@ -372,4 +350,69 @@ func (d *treeDir) ReadDir(n int) ([]fs.DirEntry, error) {
 	n = min(n, len(rest))
 	d.off += n
 	return slices.Clone(rest[:n]), nil
+}
+
+// noMatch tells whether err is git grep finding nothing: exit status 1
+// with nothing on stderr, as it exits 1 for an unreadable object too,
+// saying so.
+func noMatch(err error) bool {
+	var gerr *Error
+	var exit *exec.ExitError
+	return errors.As(err, &gerr) && gerr.Stderr == "" && errors.As(err, &exit) && exit.ExitCode() == 1
+}
+
+// WorkTree reads the working tree of the git checkout at dir: the files
+// through os.DirFS, and Grep through git grep over the tracked and
+// untracked files, so that the #include scan of a checkout is as fast as
+// a Tree's. It is safe for concurrent use and needs no Close.
+func WorkTree(ctx context.Context, dir string) fs.FS {
+	return &workTree{FS: os.DirFS(dir), ctx: ctx, dir: dir}
+}
+
+type workTree struct {
+	fs.FS
+	ctx context.Context
+	dir string
+}
+
+// Grep lists, sorted, the text files of the working tree matching one of
+// globs that contain one of strs.
+func (w *workTree) Grep(strs []string, globs ...string) ([]string, error) {
+	return grep(w.ctx, w.dir, "", strs, globs)
+}
+
+// grep lists, sorted, the text files matching one of globs that contain
+// one of strs: at rev, or in the working tree with its untracked files
+// when rev is "".
+func grep(ctx context.Context, dir, rev string, strs, globs []string) ([]string, error) {
+	args := []string{"grep", "--no-color", "-l", "-z", "-I", "-F"}
+	if rev == "" {
+		args = append(args, "--untracked")
+	}
+	for _, s := range strs {
+		args = append(args, "-e", s)
+	}
+	if rev != "" {
+		args = append(args, rev)
+	}
+	args = append(append(args, "--"), globs...)
+	out, err := run(ctx, dir, args...)
+	if noMatch(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for rec := range bytes.SplitSeq(out, []byte{0}) {
+		p, ok := string(rec), true
+		if rev != "" {
+			p, ok = strings.CutPrefix(p, rev+":")
+		}
+		if ok && p != "" {
+			paths = append(paths, p)
+		}
+	}
+	slices.Sort(paths)
+	return paths, nil
 }

@@ -214,3 +214,27 @@ func TestCatFile(t *testing.T) {
 		t.Errorf("Get after a miss = %q, %v, %v", data, ok, err)
 	}
 }
+
+func TestWorkTree(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.dir, "lib", "x.c"), "#include \"y.c\"\n")
+	write(t, filepath.Join(f.dir, "lib", "y.c"), "int y;\n")
+	git(t, f.dir, "add", "lib")
+	git(t, f.dir, "commit", "-q", "-m", "Add a library")
+	// The working tree is what is read, untracked files included.
+	write(t, filepath.Join(f.dir, "lib", "z.S"), "# include \"w.S\"\n")
+	w := WorkTree(ctx, f.dir)
+	if data, err := fs.ReadFile(w, "lib/z.S"); err != nil || string(data) != "# include \"w.S\"\n" {
+		t.Errorf("ReadFile = %q, %v", data, err)
+	}
+	g := w.(interface {
+		Grep([]string, ...string) ([]string, error)
+	})
+	got, err := g.Grep([]string{`.c"`, `.S"`}, "*.c", "*.S")
+	if err != nil || !slices.Equal(got, []string{"lib/x.c", "lib/z.S"}) {
+		t.Errorf("Grep = %q, %v; want lib/x.c and lib/z.S", got, err)
+	}
+	if got, err := g.Grep([]string{"no such text"}, "*.c"); err != nil || len(got) != 0 {
+		t.Errorf("Grep for missing text = %q, %v; want nothing", got, err)
+	}
+}
