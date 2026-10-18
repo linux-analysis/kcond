@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,41 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	}
 }
 
+// A commit the build reads nothing of does not apply; one that changes a
+// Makefile may.
+func TestDiffOutsideBuild(t *testing.T) {
+	dir, _ := newKernel(t)
+	commit := func(name, content string) string {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "add", name)
+		git(t, dir, "commit", "-q", "-m", name)
+		return git(t, dir, "rev-parse", "HEAD")
+	}
+	docs := commit("Documentation/a.rst", "A\n")
+	comment := commit("lib/c.c", "/* c */\nint c;\n")
+	makefile := commit("lib/Makefile", "obj-$(CONFIG_A) += a.o c.o\nobj-$(CONFIG_B) += b.o\n")
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_A=y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", docs, comment, makefile)
+	want := docs + "\tnot applicable\tfalse\n" + comment + "\tnot applicable\tfalse\n" + makefile + "\tunknown\tunknown\n"
+	if code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+	// Every build is read without --config: the label shows.
+	out, code = capture(t, "--tree", dir, "diff", docs, comment, makefile)
+	want = docs + "\tnone\tfalse\n" + comment + "\tnone\tfalse\n" + makefile + "\t\tunknown\n"
+	if code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}
+
 // diff judges a commit by the build --build names or the --config file is
 // for: a change to arm64 code applies to an arm64 config.
 func TestDiffBuild(t *testing.T) {
@@ -237,18 +273,25 @@ func TestDiffBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
-		args    []string
-		verdict string
+		args           []string
+		verdict, label string
 	}{
-		{[]string{"--config", arm64}, "applies"},
-		{[]string{"--config", x86}, "not applicable"},
-		{[]string{"--config", arm64, "--build", "x86_64"}, "not applicable"},
+		// Only the build the flags pick is read, so there is no label.
+		{[]string{"--config", arm64}, "applies", ""},
+		{[]string{"--config", x86}, "not applicable", ""},
+		{[]string{"--config", arm64, "--build", "x86_64"}, "not applicable", ""},
+		{nil, "", "arm64"},
 	} {
 		out, code := capture(t, append([]string{"--tree", dir, "--json", "diff", fix}, c.args...)...)
 		var res []commitResult
-		if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || res[0].Verdict != c.verdict || res[0].Label != "arm64" {
-			t.Errorf("diff %v = %q, %d; want %s on arm64", c.args, out, code, c.verdict)
+		if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || res[0].Verdict != c.verdict || res[0].Label != c.label {
+			t.Errorf("diff %v = %q, %d; want %s, label %q", c.args, out, code, c.verdict, c.label)
 		}
+	}
+	// The text leaves out the label column and the arches.
+	want := fix + "\ttrue\n  arch/arm64/kernel/cpu.c\tbuilt\ttrue\tregion true\n"
+	if out, code := capture(t, "--tree", dir, "--build", "arm64", "diff", fix); code != 0 || out != want {
+		t.Errorf("diff --build arm64 = %q, %d; want %q", out, code, want)
 	}
 }
 
@@ -346,6 +389,43 @@ func TestCondLines(t *testing.T) {
 	for _, bad := range []string{"lib/a.c:9", "lib/a.c:0", "lib/a.c:3-2", "Makefile"} {
 		if _, code := capture(t, "--tree", dir, "cond", bad); code == 0 {
 			t.Errorf("cond %s exited 0", bad)
+		}
+	}
+}
+
+func TestDiffRange(t *testing.T) {
+	dir, fix := newKernel(t)
+	base := git(t, dir, "rev-parse", fix+"^")
+	if err := os.WriteFile(filepath.Join(dir, "lib", "b.c"), []byte("/* the b */\nint b = 2;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "commit", "-q", "-a", "-m", "b")
+	third := git(t, dir, "rev-parse", "HEAD")
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A range lists its commits oldest first; the commit line leads with
+	// the verdict and the condition, and the file rows follow.
+	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", base+"..HEAD")
+	var lines []string
+	for l := range strings.Lines(out) {
+		if !strings.HasPrefix(l, " ") {
+			lines = append(lines, strings.TrimSuffix(l, "\n"))
+		}
+	}
+	want := []string{fix + "\tapplies\tCONFIG_A", third + "\tnot applicable\tCONFIG_B"}
+	if code != 0 || !slices.Equal(lines, want) || !strings.Contains(out, "\n  lib/b.c\tbuilt\tCONFIG_B\tregion true\n") {
+		t.Errorf("diff range = %q, %d; want the commit lines %q", out, code, want)
+	}
+	if out, code := capture(t, "--tree", dir, "--json", "diff", "HEAD..HEAD"); code != 0 || out != "kcond: HEAD..HEAD has no commits\n[]\n" {
+		t.Errorf("diff of an empty range = %q, %d", out, code)
+	}
+	// A.. and A...B read the Makefiles at the end too: HEAD.
+	whole, _ := capture(t, "--tree", dir, "--json", "diff", base+"..HEAD")
+	for _, r := range []string{base + "..", base + "...HEAD"} {
+		if out, code := capture(t, "--tree", dir, "--json", "diff", r); code != 0 || out != whole || !strings.Contains(out, `"rev": "HEAD"`) {
+			t.Errorf("diff %s = %q, %d; want %q", r, out, code, whole)
 		}
 	}
 }
