@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/linux-analysis/kcond"
@@ -29,18 +30,34 @@ import (
 	"github.com/linux-analysis/kcond/crawl"
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
+	"github.com/linux-analysis/kcond/kbuild"
 )
 
 const usage = `usage: kcond [flags] command [args]
 
-commands:
-  cond PATH...               the Kbuild condition of each file, per build
-  diff HASH...               the files a commit changes, their regions and
-                             conditions, and with --config the verdict
-  arches PATH...             the architectures that may build each file
-  eval EXPR...               whether conditions hold for the --config file
-  config F                   what a .config says: build, version, options
-  symbols SYMBOL...          what a build's Kconfig says about symbols
+The kernel tree is the one the current directory is in, or --tree DIR;
+it is read as checked out, or at --rev REV. Paths are relative to the
+current directory, or to the tree with --tree. Conditions are written
+CONFIG_A && (CONFIG_B || !CONFIG_C); CONFIG_X=y and CONFIG_X=m test one
+tristate value. --config selects the build the .config is for unless
+--build says otherwise.
+
+the tree:
+  cond PATH[:LINE[-LINE]]...  under which condition each build compiles the
+                              file or its lines: the Kbuild condition, the
+                              #if region and their AND; with --config, the
+                              verdict
+  arches PATH...              the architectures that may build each file
+  symbols SYMBOL...           what a build's Kconfig says about symbols
+
+commits:
+  diff HASH...                the files a commit changes, the condition of
+                              its changed lines, its arch label and, with
+                              --config, the verdict
+
+a .config:
+  eval EXPR...                whether conditions hold for the --config file
+  config FILE                 what a .config says: build, version, options
 
 flags:
 `
@@ -49,6 +66,8 @@ flags:
 type opts struct {
 	tree, rev, build, config string
 	json, version            bool
+	cfg                      *dotconfig.File // the --config file, read once
+	stderr                   io.Writer
 }
 
 // version is what the build stamps with -X main.version.
@@ -59,7 +78,7 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	var o opts
+	o := opts{stderr: stderr}
 	fs := flag.NewFlagSet("kcond", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&o.tree, "tree", "", "the kernel tree (default: the one the current directory is in)")
@@ -101,6 +120,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if o.build != "" && !slices.Contains(builds.ConfigBuilds, o.build) {
 		fmt.Fprintf(stderr, "kcond: --build takes one of %s\n", strings.Join(builds.ConfigBuilds, ", "))
 		return 2
+	}
+	if o.config != "" {
+		f, err := readConfig(o.config)
+		if err != nil {
+			fmt.Fprintln(stderr, "kcond:", err)
+			return 1
+		}
+		if f.Partial {
+			fmt.Fprintln(stderr, "kcond: the .config has no header and few options off, like a defconfig; the options it leaves out count as off")
+		}
+		o.cfg = &f
 	}
 	// Ctrl-C kills the process: a crawl it interrupted would read as
 	// files not built.
@@ -237,16 +267,39 @@ func isFile(fsys fs.FS, p string) error {
 	return nil
 }
 
-// each calls f with each build of the tree, or only the one --build names.
+// buildName is the build --build names, or else the one the --config file
+// is for; "" for neither.
+func buildName(o opts) string {
+	if o.build == "" && o.cfg != nil {
+		return o.cfg.Build
+	}
+	return o.build
+}
+
+// each calls f with each build of the tree, or only the one buildName
+// gives.
 func each(fsys fs.FS, o opts, f func(builds.Build) error) error {
-	if o.build == "" {
-		return builds.Each(fsys, nil, f)
+	build := buildName(o)
+	if build == "" {
+		return builds.Each(fsys, nil, func(b builds.Build) error {
+			warn(o, b)
+			return f(b)
+		})
 	}
-	b, ok := builds.Named(fsys, o.build)
+	b, ok := builds.Named(fsys, build)
 	if !ok {
-		return fmt.Errorf("the tree has no %s build", o.build)
+		return fmt.Errorf("the tree has no %s build", build)
 	}
+	warn(o, b)
 	return f(b)
+}
+
+// warn says on stderr why a build's Makefiles or Kconfig could not be read,
+// which leaves its files unknown.
+func warn(o opts, b builds.Build) {
+	if b.Err != nil {
+		fmt.Fprintf(o.stderr, "kcond: the %s build: %v\n", b.Name, b.Err)
+	}
 }
 
 func print(out io.Writer, o opts, v any, text func()) error {
@@ -266,40 +319,122 @@ func condText(e *kcond.Expr) string {
 	return e.String()
 }
 
-// fileCond is the condition of one file in one build.
-type fileCond struct {
-	Path   string `json:"path"`
-	Build  string `json:"build"`
-	Status string `json:"status"`
-	Kbuild string `json:"kbuild,omitempty"`
+// query is a file, or some of its lines, to ask about.
+type query struct {
+	path     string
+	from, to int // 1-based, inclusive; 0 for the whole file
 }
 
-func cond(ctx context.Context, o opts, paths []string, out io.Writer) error {
-	if len(paths) == 0 {
-		return fmt.Errorf("%w: cond takes paths", errUsage)
+// parseQuery reads PATH[:LINE[-LINE]]; no kernel path has a colon.
+func parseQuery(arg string) (query, error) {
+	p, lines, ok := strings.Cut(arg, ":")
+	if !ok {
+		return query{path: arg}, nil
 	}
-	for i, p := range paths {
-		var err error
-		if paths[i], err = treePath(o, p); err != nil {
+	first, last, ok := strings.Cut(lines, "-")
+	from, err := strconv.Atoi(first)
+	to := from
+	if err == nil && ok {
+		to, err = strconv.Atoi(last)
+	}
+	if err != nil || from < 1 || to < from {
+		return query{}, fmt.Errorf("%w: %s: lines are LINE or LINE-LINE, from 1", errUsage, arg)
+	}
+	return query{path: p, from: from, to: to}, nil
+}
+
+// lines writes the line range of q, "" for the whole file.
+func (q query) lines() string {
+	switch {
+	case q.from == 0:
+		return ""
+	case q.from == q.to:
+		return strconv.Itoa(q.from)
+	}
+	return fmt.Sprintf("%d-%d", q.from, q.to)
+}
+
+// region is the condition of the lines of q in fsys: the OR of the
+// preprocessor and guard conditions of each; true for the whole file.
+func region(fsys fs.FS, q query) (*kcond.Expr, error) {
+	if q.from == 0 {
+		return kcond.Const(true), nil
+	}
+	data, err := fs.ReadFile(fsys, q.path)
+	if err != nil {
+		return nil, err
+	}
+	src, err := kcond.Analyze(data, kbuild.CodeOf(q.path))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", q.path, err)
+	}
+	if q.to > len(src.Code) {
+		return nil, fmt.Errorf("%s:%s: the file has %d lines", q.path, q.lines(), len(src.Code))
+	}
+	var terms []*kcond.Expr
+	for i := q.from - 1; i < q.to; i++ {
+		terms = append(terms, src.Cond(i))
+	}
+	return kcond.Or(terms...), nil
+}
+
+// fileCond is the condition of one file, or of some of its lines, in one
+// build.
+type fileCond struct {
+	Path      string `json:"path"`
+	Lines     string `json:"lines,omitempty"`
+	Build     string `json:"build"`
+	Status    string `json:"status"`
+	Kbuild    string `json:"kbuild,omitempty"`
+	Region    string `json:"region"`
+	Condition string `json:"condition,omitempty"`
+	Verdict   string `json:"verdict,omitempty"`
+}
+
+func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("%w: cond takes paths, with lines as PATH:LINE or PATH:LINE-LINE", errUsage)
+	}
+	queries := make([]query, len(args))
+	for i, a := range args {
+		q, err := parseQuery(a)
+		if err != nil {
 			return err
 		}
+		if q.path, err = treePath(o, q.path); err != nil {
+			return err
+		}
+		if ok, _ := change.Kernel(q.path); !ok {
+			return fmt.Errorf("%w: %s is not a kernel source or header", errUsage, q.path)
+		}
+		queries[i] = q
 	}
 	fsys, close, err := open(ctx, o)
 	if err != nil {
 		return err
 	}
 	defer close()
-	for _, p := range paths {
-		if err := isFile(fsys, p); err != nil {
+	regions := make([]*kcond.Expr, len(queries))
+	for i, q := range queries {
+		if err := isFile(fsys, q.path); err != nil {
+			return err
+		}
+		if regions[i], err = region(fsys, q); err != nil {
 			return err
 		}
 	}
 	var rows []fileCond
 	err = each(fsys, o, func(b builds.Build) error {
-		for _, p := range paths {
-			_, header := change.Kernel(p)
-			fc := builds.BuildCond(p, header, kcond.Const(true), b)
-			rows = append(rows, fileCond{Path: p, Build: b.Name, Status: fc.Status, Kbuild: condText(fc.Kbuild)})
+		for i, q := range queries {
+			_, header := change.Kernel(q.path)
+			fc := builds.BuildCond(q.path, header, regions[i], b)
+			e, unknown := builds.Combine([]builds.FileCond{fc})
+			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status, Kbuild: condText(fc.Kbuild),
+				Region: fc.Region.String(), Condition: condText(e)}
+			if o.cfg != nil {
+				r.Verdict = change.VerdictName(change.Verdict(e, unknown, o.cfg.Config))
+			}
+			rows = append(rows, r)
 		}
 		return nil
 	})
@@ -308,7 +443,18 @@ func cond(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {
-			fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", r.Path, r.Build, r.Status, r.Kbuild)
+			p, cond := r.Path, r.Condition
+			if r.Lines != "" {
+				p += ":" + r.Lines
+			}
+			if cond == "" {
+				cond = "unknown"
+			}
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s", p, r.Build, r.Status, r.Kbuild, r.Region, cond)
+			if r.Verdict != "" {
+				fmt.Fprintf(out, "\t%s", r.Verdict)
+			}
+			fmt.Fprintln(out)
 		}
 	})
 }
@@ -350,18 +496,17 @@ func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 		return err
 	}
 	var cfg kcond.Config
-	if o.config != "" {
-		f, err := readConfig(o.config)
-		if err != nil {
-			return err
-		}
-		cfg = f.Config
+	if o.cfg != nil {
+		cfg = o.cfg.Config
 	}
 	cat, err := gitfs.NewCatFile(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer cat.Close()
+	// The condition is the one of the build the flags pick, x86-64's
+	// without one.
+	build := buildName(o)
 	var results []commitResult
 	for _, h := range hashes {
 		d, err := gitfs.Diff(ctx, dir, h)
@@ -383,20 +528,28 @@ func diff(ctx context.Context, o opts, hashes []string, out io.Writer) error {
 		var fas []builds.FileArches
 		for i, ch := range changes {
 			res := found[i]
+			fc := res.Cond
+			if build != "" && build != builds.X86_64Build && res.Rev != "" {
+				var ok bool
+				if fc, ok = res.Builds[build]; !ok {
+					// The revision lacks the build: unknown.
+					fc = builds.FileCond{Header: ch.Header, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
+				}
+			}
 			c := changed{Path: ch.Path, Header: ch.Header, Region: ch.Region.String(), Functions: ch.Functions, Rev: res.Rev,
-				Status: res.Cond.Status, Kbuild: condText(res.Cond.Kbuild)}
+				Status: fc.Status, Kbuild: condText(fc.Kbuild)}
 			c.Arches, c.Unknown = res.Arches.Lists()
-			for name, fc := range res.Builds {
+			for name, b := range res.Builds {
 				if c.Builds == nil {
 					c.Builds = map[string]string{}
 				}
-				c.Builds[name] = fc.Status
-				if fc.Kbuild != nil {
-					c.Builds[name] += " " + fc.Kbuild.String()
+				c.Builds[name] = b.Status
+				if b.Kbuild != nil {
+					c.Builds[name] += " " + b.Kbuild.String()
 				}
 			}
 			r.Files = append(r.Files, c)
-			conds = append(conds, res.Cond)
+			conds = append(conds, fc)
 			fas = append(fas, res.Arches)
 		}
 		e, unknown := builds.Combine(conds)
@@ -470,6 +623,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 		fas[i] = builds.FileArches{Path: p, Header: header}
 	}
 	err = builds.Each(fsys, nil, func(b builds.Build) error {
+		warn(o, b)
 		for i := range fas {
 			fas[i].Add(b, kcond.Const(true), defined)
 		}
@@ -505,12 +659,8 @@ func readConfig(path string) (dotconfig.File, error) {
 }
 
 func eval(o opts, exprs []string, out io.Writer) error {
-	if o.config == "" || len(exprs) == 0 {
+	if o.cfg == nil || len(exprs) == 0 {
 		return fmt.Errorf("%w: eval takes --config FILE and conditions", errUsage)
-	}
-	f, err := readConfig(o.config)
-	if err != nil {
-		return err
 	}
 	type result struct {
 		Condition string `json:"condition"`
@@ -522,7 +672,7 @@ func eval(o opts, exprs []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		rows = append(rows, result{e.String(), change.VerdictName(e.Eval(f.Config))})
+		rows = append(rows, result{e.String(), change.VerdictName(e.Eval(o.cfg.Config))})
 	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {
