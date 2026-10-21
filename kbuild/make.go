@@ -1090,6 +1090,26 @@ func (e *evaluator) function(name string, args []string) []cword {
 			out = append(out, w)
 		}
 		return out
+	case "or":
+		// The first argument that is not empty: each one's words under
+		// the condition that those before it were empty.
+		var out []cword
+		before := kcond.Const(true)
+		for _, a := range args {
+			ws := e.expand(a)
+			cond, opaque := e.nonEmpty(ws)
+			if opaque {
+				cond = kcond.Var("$(or "+strings.TrimSpace(a)+")", kcond.Enabled)
+			}
+			for _, w := range ws {
+				w.cond = kcond.And(w.cond, before)
+				out = append(out, w)
+			}
+			if before = kcond.And(before, kcond.Not(cond)); before.IsConst(false) {
+				break
+			}
+		}
+		return out
 	case "foreach":
 		var out []cword
 		e.forEach(arg(0), arg(1), func(w cword) {

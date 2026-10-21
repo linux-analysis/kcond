@@ -449,7 +449,8 @@ obj-$(findstring y, $(CONFIG_J) $(CONFIG_K)) += j.o
 obj-$(shell true) += z.o
 objname = $(n).o
 obj-y += $(foreach n,k l,$(objname))
-`, "a.c", "b.c", "c.c", "d.c", "skip.c", "e.c", "sub/f.c", "g.c", "h.c", "i.c", "noti.c", "stub.c", "j.c", "z.c", "k.c", "l.c"))
+obj-y += $(or $(if $(CONFIG_O),o.o),noto.o) $(or ,p.o)
+`, "a.c", "b.c", "c.c", "d.c", "skip.c", "e.c", "sub/f.c", "g.c", "h.c", "i.c", "noti.c", "stub.c", "j.c", "z.c", "k.c", "l.c", "o.c", "noto.c", "p.c"))
 	if !slices.ContainsFunc(r.Errors, func(s string) bool { return strings.Contains(s, "opaque variable name obj-$(shell true) not assigned") }) {
 		t.Errorf("Errors = %q; want the opaque obj-$(shell true)", r.Errors)
 	}
@@ -470,6 +471,9 @@ obj-y += $(foreach n,k l,$(objname))
 		"drivers/d/z.c":     "",
 		"drivers/d/k.c":     "true",
 		"drivers/d/l.c":     "true",
+		"drivers/d/o.c":     "CONFIG_O",
+		"drivers/d/noto.c":  "!CONFIG_O",
+		"drivers/d/p.c":     "true",
 	})
 }
 
