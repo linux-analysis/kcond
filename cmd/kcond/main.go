@@ -616,15 +616,20 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 		for _, ch := range changes[i] {
 			res := found[0]
 			found = found[1:]
-			fc := res.Cond
+			// The region is written as the build reads it, like the
+			// condition: X=y as X for a bool, MODULE and -D macros
+			// resolved.
+			fc, region := res.Cond, res.Cond.Region
 			if build != "" && build != builds.X86_64Build && res.Rev != "" {
 				var ok bool
-				if fc, ok = res.Builds[build]; !ok {
+				if fc, ok = res.Builds[build]; ok {
+					region = fc.Region
+				} else {
 					// The revision lacks the build: unknown.
 					fc = builds.FileCond{Header: ch.Header, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
 				}
 			}
-			c := changed{Path: ch.Path, Header: ch.Header, Region: ch.Region.String(), Functions: ch.Functions, Rev: res.Rev,
+			c := changed{Path: ch.Path, Header: ch.Header, Region: region.String(), Functions: ch.Functions, Rev: res.Rev,
 				Status: fc.Status, Kbuild: condText(fc.Kbuild)}
 			c.Arches, c.Unknown = res.Arches.Lists()
 			for name, b := range res.Builds {
