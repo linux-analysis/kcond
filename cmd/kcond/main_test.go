@@ -285,6 +285,31 @@ func TestDiffReadsMakefilesAtCommit(t *testing.T) {
 	}
 }
 
+// A file row writes the region as the build reads it, like the condition:
+// a bool tested with #ifdef is the bare symbol, not X=y; a tristate keeps
+// its =y.
+func TestDiffRegionPlain(t *testing.T) {
+	dir, _ := newKernel(t)
+	commit := func(ab, aa string) string {
+		src := "int a = 1;\n#ifdef CONFIG_B\n" + ab + "\n#endif\n#ifdef CONFIG_A\n" + aa + "\n#endif\n"
+		if err := os.WriteFile(filepath.Join(dir, "lib", "a.c"), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "commit", "-q", "-a", "-m", "a")
+		return git(t, dir, "rev-parse", "HEAD")
+	}
+	commit("int ab;", "int aa;")
+	for _, c := range []struct{ ab, aa, want string }{
+		{"int ab;", "int aa = 1;", "CONFIG_A\n  lib/a.c\tbuilt\tCONFIG_A\tregion CONFIG_A\n"},
+		{"int ab = 2;", "int aa = 1;", "CONFIG_A && CONFIG_B=y\n  lib/a.c\tbuilt\tCONFIG_A\tregion CONFIG_B=y\n"},
+	} {
+		head := commit(c.ab, c.aa)
+		if out, code := capture(t, "--tree", dir, "--build", "x86_64", "diff", head); code != 0 || out != head+"\t"+c.want {
+			t.Errorf("diff = %q, %d; want %q", out, code, head+"\t"+c.want)
+		}
+	}
+}
+
 // diff judges a commit by the build --build names or the --config file is
 // for: a change to arm64 code applies to an arm64 config.
 func TestDiffBuild(t *testing.T) {
