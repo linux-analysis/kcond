@@ -571,7 +571,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	var scan sync.WaitGroup
 	var scanErr error
-	var names map[string][]incName
+	var names map[string][]string
 	var read map[string][]incLine
 	if r.Includes = opts.Includes; r.Includes == nil {
 		scan.Go(func() { r.Includes, scanErr = ScanIncludes(fsys) })

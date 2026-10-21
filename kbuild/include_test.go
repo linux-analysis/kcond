@@ -2,7 +2,9 @@ package kbuild
 
 import (
 	"io/fs"
+	"path"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/linux-analysis/kcond"
@@ -179,7 +181,51 @@ func (g grepTree) Grep(strs []string, globs ...string) ([]string, error) {
 }
 
 func (g grepTree) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
-	return nil, fs.ErrInvalid
+	out := map[string][]string{}
+	err := fs.WalkDir(g.FS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !slices.ContainsFunc(globs, func(g string) bool { ok, _ := path.Match(g, path.Base(p)); return ok }) {
+			return err
+		}
+		data, err := fs.ReadFile(g.FS, p)
+		for _, l := range strings.Split(string(data), "\n") {
+			if slices.ContainsFunc(strs, func(s string) bool { return strings.Contains(l, s) }) {
+				out[p] = append(out[p], l)
+			}
+		}
+		return err
+	})
+	return out, err
+}
+
+// The directive lines a GrepFS lists give the #include lines and their
+// conditions a read of each file would: past a comment the grep's lines
+// leave open, an #else after a tab, a guard after comment lines that
+// mention #include, a guard with a comment, and a continuation followed
+// by spaces.
+func TestListIncludesGrep(t *testing.T) {
+	files := map[string]string{
+		"a.c": "#include <a1.h> /* first,\n   second */\n#include <a2.h>\n",
+		"b.c": "#ifdef CONFIG_X\n#include <b1.h>\n#\telse\n#include <b2.h>\n#endif\n",
+		"c.h": "/*\n * Do not #include this directly.\n */\n#ifndef _C_H\n#define _C_H\n#include <c1.h>\n#endif\n",
+		"d.h": "#ifndef _D_H /* guard */\n#define _D_H\n#include <d1.h>\n#endif\n",
+		"e.c": "#if defined(CONFIG_A) || \\  \n    defined(CONFIG_B)\n#include <e1.h>\n#endif\n",
+	}
+	_, read, err := listIncludes(grepTree{FS: tree(files)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, data := range files {
+		var got, want []string
+		for _, l := range read[p] {
+			got = append(got, l.name+" "+l.cond.String())
+		}
+		for _, l := range incLines([]byte(data), p) {
+			want = append(want, l.name+" "+l.cond.String())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: %q, want %q", p, got, want)
+		}
+	}
 }
 
 // ScanIncludes reads only the files a GrepFS finds.
