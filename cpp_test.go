@@ -268,8 +268,9 @@ int foo(void);
 
 // A macro the file itself defines or undefines before a test is known
 // there: atyfb's #undef DEBUG makes its #ifdef DEBUG blocks dead, a
-// #define under a condition holds under it, and an #include may define
-// the macro again. CONFIG_ symbols are left to Kconfig.
+// #define under a condition holds under it and only under it before any
+// #include, and an #include may define the macro again. CONFIG_ symbols
+// are left to Kconfig.
 func TestLinesFileMacros(t *testing.T) {
 	checkLines(t, `#undef DEBUG
 /*#define DEBUG*/
@@ -301,7 +302,7 @@ d
 		"CONFIG_A=y",
 		"true",
 		"true",
-		`("defined(D)" || CONFIG_A=y) && !"defined(E)"`,
+		`!"defined(E)" && CONFIG_A=y`,
 		"true",
 		"true",
 		"true",
@@ -313,6 +314,64 @@ d
 		"CONFIG_64BIT=y",
 		"true",
 	})
+}
+
+// A file that tests a macro it defines further down, as qspinlock.c does
+// before including itself for the paravirt slowpath, is compiled once
+// without it: the test before any #include is undefined, the one after
+// the includes may see a header's definition.
+func TestLinesSelfInclude(t *testing.T) {
+	checkLines(t, `#ifndef _GEN_PV
+#include "lock.h"
+int lock;
+#endif
+#if !defined(_GEN_PV) && defined(CONFIG_PV)
+#define _GEN_PV
+#include "lock.c"
+#endif
+`, []string{"true", "true", "true", "true", "true", `!"defined(_GEN_PV)" && CONFIG_PV=y`, `!"defined(_GEN_PV)" && CONFIG_PV=y`, "true"})
+}
+
+// A header may be included after its includer defined the macro, as a
+// trace header includes define_trace.h under CREATE_TRACE_POINTS, so a
+// test before its first #include is still the atom; its include guard
+// adds no condition, its #ifndef line included.
+func TestLinesHeaderMacros(t *testing.T) {
+	src := `#ifndef _FOO_H
+#define _FOO_H
+#ifdef CREATE_TRACE_POINTS
+#undef CREATE_TRACE_POINTS
+x
+#define CREATE_TRACE_POINTS
+#endif
+#endif
+`
+	got, err := Lines([]byte(src), Code{Assembly: Unknown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctp := `"defined(CREATE_TRACE_POINTS)"`
+	for i, w := range []string{"true", "true", "true", ctp, ctp, ctp, "true", "true"} {
+		if got[i].String() != w {
+			t.Errorf("line %d: %s, want %s", i+1, got[i], w)
+		}
+	}
+	// A guard after another test, and that of a trace header, which may
+	// be read again, hold as well.
+	src = `#ifndef __ASSEMBLY__
+#error
+#endif
+#if !defined(_T_H) || defined(TRACE_HEADER_MULTI_READ)
+#define _T_H
+x
+#endif
+`
+	if got, err = Lines([]byte(src), Code{Assembly: Unknown}); err != nil {
+		t.Fatal(err)
+	}
+	if got[5].String() != "true" {
+		t.Errorf("guarded line: %s, want true", got[5])
+	}
 }
 
 // A file that redefines a macro under tests of itself, as arm's
