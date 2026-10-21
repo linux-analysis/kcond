@@ -56,11 +56,11 @@ var comparisons = map[string][]int{"==": {0}, "!=": {-1, 1}, "<": {-1}, "<=": {-
 const maxDefinition = 4096
 
 // Lines returns the preprocessor condition of every line of a C source:
-// lines[i] is the condition under which line i+1 is compiled. #if, #elif,
-// #else and #endif lines get the condition outside the conditional they
-// open, continue or close; other directives that of their region. Conditions
-// that
-// ParseIf rejects become opaque atoms; unbalanced directives are an
+// lines[i] is the condition under which line i+1 is compiled. #if, #elif
+// and #else lines get the condition of the branch they open, so that a
+// change wrapping code in #ifdef CONFIG_X reads as one to CONFIG_X; #endif
+// gets that of the branch it closes; other directives that of their region.
+// Conditions that ParseIf rejects become opaque atoms; unbalanced directives are an
 // error. An include guard (a leading #ifndef X followed by #define X) adds no
 // condition. A macro the file itself #defines or #undefs is known after
 // that, where it would otherwise be an opaque atom: defined there, or not,
@@ -121,7 +121,7 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 			conds[j] = c
 		}
 	}
-	inComment, first, guard := false, true, ""
+	inComment, first, guard, guardLine := false, true, "", 0
 	track := func(id string, e *Expr) {
 		if len(e.String()) > maxDefinition {
 			delete(defs, id)
@@ -152,6 +152,7 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 		if name != "define" {
 			guard = ""
 		}
+		opens := false // the line opens a branch and gets its condition
 		switch name {
 		case "if", "ifdef", "ifndef":
 			c, err := directiveCond(name, rest, code, defs)
@@ -159,9 +160,10 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 				return nil, errorf("%v", err)
 			}
 			if name == "ifndef" && first {
-				guard = firstIdent(rest)
+				guard, guardLine = firstIdent(rest), start
 			}
 			stack = append(stack, frame{cur: c})
+			opens = true
 		case "elif", "elifdef", "elifndef", "else":
 			if len(stack) == 0 {
 				return nil, errorf("no matching #if")
@@ -181,19 +183,18 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 			}
 			top.prev = append(top.prev, top.cur)
 			top.cur = c
-			setConds(start, i, levels[len(stack)-1])
+			opens = true
 		case "endif":
 			if len(stack) == 0 {
 				return nil, errorf("no matching #if")
 			}
 			stack = stack[:len(stack)-1]
-			setConds(start, i, levels[len(stack)])
 		case "define", "undef":
 			id := firstIdent(rest)
 			if name == "define" && guard != "" && id == guard {
 				stack[len(stack)-1].cur = Const(true)
 				update()
-				setConds(start, i, levels[len(stack)])
+				setConds(guardLine, i, levels[len(stack)])
 			} else if fileMacro(id) {
 				level, prev := levels[len(stack)], macroDefs(id, code, defs)
 				if name == "define" {
@@ -210,6 +211,9 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 		}
 		first = false
 		update()
+		if opens {
+			setConds(start, i, levels[len(stack)])
+		}
 	}
 	if len(stack) > 0 {
 		return nil, fmt.Errorf("kcond: %d unterminated #if", len(stack))

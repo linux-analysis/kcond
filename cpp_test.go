@@ -130,6 +130,8 @@ func checkLines(t *testing.T, src string, want []string) {
 	}
 }
 
+// Each directive line gets the branch it opens, #endif the branch it
+// closes, so a hunk that adds or wraps a block reads as the block.
 func TestLinesElifChain(t *testing.T) {
 	// The else branch must be !A && !B, not !(!A && B).
 	checkLines(t, `#if defined(CONFIG_A)
@@ -143,15 +145,15 @@ d
 #endif
 e
 `, []string{
-		"true",
 		"CONFIG_A=y",
-		"true",
+		"CONFIG_A=y",
 		"!CONFIG_A=y && CONFIG_B",
-		"true",
+		"!CONFIG_A=y && CONFIG_B",
 		"!CONFIG_A=y && !CONFIG_B && CONFIG_C=m",
-		"true",
+		"!CONFIG_A=y && !CONFIG_B && CONFIG_C=m",
 		"!CONFIG_A=y && !CONFIG_B && !CONFIG_C=m",
-		"true",
+		"!CONFIG_A=y && !CONFIG_B && !CONFIG_C=m",
+		"!CONFIG_A=y && !CONFIG_B && !CONFIG_C=m",
 		"true",
 	})
 }
@@ -163,12 +165,12 @@ x
 #endif
 y
 #endif`, []string{
-		"true",
 		"CONFIG_A=y",
+		"CONFIG_A=y && !CONFIG_B=m",
+		"CONFIG_A=y && !CONFIG_B=m",
 		"CONFIG_A=y && !CONFIG_B=m",
 		"CONFIG_A=y",
 		"CONFIG_A=y",
-		"true",
 	})
 }
 
@@ -180,12 +182,12 @@ x
 y
 #endif
 `, []string{
-		"true",
-		"true",
+		"CONFIG_A=y",
 		"!CONFIG_A=y && CONFIG_B=y",
-		"true",
+		"!CONFIG_A=y && CONFIG_B=y",
 		"!CONFIG_A=y && !CONFIG_B=y && !CONFIG_C=y",
-		"true",
+		"!CONFIG_A=y && !CONFIG_B=y && !CONFIG_C=y",
+		"!CONFIG_A=y && !CONFIG_B=y && !CONFIG_C=y",
 	})
 }
 
@@ -195,10 +197,10 @@ func TestLinesContinuation(t *testing.T) {
 x
 #endif
 `, []string{
-		"true",
-		"true",
 		"CONFIG_A=y && CONFIG_B=y",
-		"true",
+		"CONFIG_A=y && CONFIG_B=y",
+		"CONFIG_A=y && CONFIG_B=y",
+		"CONFIG_A=y && CONFIG_B=y",
 	})
 }
 
@@ -215,17 +217,17 @@ const char *s = "/* not a comment";
 c
   # endif
 `, []string{
-		"true",
+		"CONFIG_A=y",
+		"CONFIG_A=y",
 		"CONFIG_A=y",
 		"true",
 		"true",
 		"true",
 		"true",
-		"true",
-		"true",
 		"CONFIG_C",
 		"CONFIG_C",
-		"true",
+		"CONFIG_C",
+		"CONFIG_C",
 	})
 }
 
@@ -235,7 +237,7 @@ dead
 #else
 live
 #endif
-`, []string{"true", "false", "true", "true", "true"})
+`, []string{"false", "false", "true", "true", "true"})
 	checkLines(t, `#if 1
 live
 #else
@@ -251,8 +253,8 @@ a
 #if 0 && defined(CONFIG_B)
 dead
 #endif
-`, []string{"true", "true", "true", "false", "true", "true", "false", "true", "false", "true",
-		"CONFIG_A=y", "true", "true", "false", "true"})
+`, []string{"true", "true", "false", "false", "false", "false", "false", "false", "false", "CONFIG_A=y",
+		"CONFIG_A=y", "CONFIG_A=y", "false", "false", "false"})
 }
 
 func TestLinesIncludeGuard(t *testing.T) {
@@ -263,7 +265,7 @@ func TestLinesIncludeGuard(t *testing.T) {
 int foo(void);
 #endif
 #endif /* _LINUX_FOO_H */
-`, []string{"true", "true", "true", "true", "CONFIG_FOO=y", "true", "true"})
+`, []string{"true", "true", "true", "CONFIG_FOO=y", "CONFIG_FOO=y", "CONFIG_FOO=y", "true"})
 }
 
 // A macro the file itself defines or undefines before a test is known
@@ -295,24 +297,24 @@ d
 `, []string{
 		"true",
 		"true",
-		"true",
 		"false",
-		"true",
-		"true",
+		"false",
+		"false",
 		"CONFIG_A=y",
-		"true",
-		"true",
+		"CONFIG_A=y",
+		"CONFIG_A=y",
+		`!"defined(E)" && CONFIG_A=y`,
+		`!"defined(E)" && CONFIG_A=y`,
 		`!"defined(E)" && CONFIG_A=y`,
 		"true",
 		"true",
-		"true",
-		"true",
+		`"defined(F)"`,
+		`"defined(F)"`,
 		`"defined(F)"`,
 		"true",
-		"true",
-		"true",
 		"CONFIG_64BIT=y",
-		"true",
+		"CONFIG_64BIT=y",
+		"CONFIG_64BIT=y",
 	})
 }
 
@@ -329,7 +331,7 @@ int lock;
 #define _GEN_PV
 #include "lock.c"
 #endif
-`, []string{"true", "true", "true", "true", "true", `!"defined(_GEN_PV)" && CONFIG_PV=y`, `!"defined(_GEN_PV)" && CONFIG_PV=y`, "true"})
+`, []string{"true", "true", "true", "true", `!"defined(_GEN_PV)" && CONFIG_PV=y`, `!"defined(_GEN_PV)" && CONFIG_PV=y`, `!"defined(_GEN_PV)" && CONFIG_PV=y`, `!"defined(_GEN_PV)" && CONFIG_PV=y`})
 }
 
 // A header may be included after its includer defined the macro, as a
@@ -351,7 +353,7 @@ x
 		t.Fatal(err)
 	}
 	ctp := `"defined(CREATE_TRACE_POINTS)"`
-	for i, w := range []string{"true", "true", "true", ctp, ctp, ctp, "true", "true"} {
+	for i, w := range []string{"true", "true", ctp, ctp, ctp, ctp, ctp, "true"} {
 		if got[i].String() != w {
 			t.Errorf("line %d: %s, want %s", i+1, got[i], w)
 		}
@@ -400,7 +402,7 @@ func TestLinesMalformedCondition(t *testing.T) {
 	checkLines(t, `#if CONFIG_A &&
 x
 #endif
-`, []string{"true", `"CONFIG_A &&"`, "true"})
+`, []string{`"CONFIG_A &&"`, `"CONFIG_A &&"`, `"CONFIG_A &&"`})
 }
 
 func TestLinesErrors(t *testing.T) {
@@ -464,9 +466,9 @@ x
 		code Code
 		want []string
 	}{
-		{kernelC, []string{"true", "true", "true", "false", "true", "true", "false", "true", "true", "CONFIG_A=y", "true"}},
-		{Code{Kernel: true, Assembly: True}, []string{"true", "false", "true", "true", "true", "true", "true", "true", "true", "false", "true"}},
-		{Code{Assembly: Unknown}, []string{"true", "true", "true", "true", "true", "true", "true", "true", "true", "CONFIG_A=y", "true"}},
+		{kernelC, []string{"true", "true", "false", "false", "false", "false", "false", "false", "CONFIG_A=y", "CONFIG_A=y", "CONFIG_A=y"}},
+		{Code{Kernel: true, Assembly: True}, []string{"false", "false", "true", "true", "true", "true", "true", "true", "false", "false", "false"}},
+		{Code{Assembly: Unknown}, []string{"true", "true", "true", "true", "true", "true", "true", "true", "CONFIG_A=y", "CONFIG_A=y", "CONFIG_A=y"}},
 	} {
 		got, err := Lines([]byte(src), tc.code)
 		if err != nil {
