@@ -285,6 +285,9 @@ var ownLists = map[string][]ownList{
 	"arch/s390/kernel/vdso":         {{name: "obj-vdso"}, {name: "obj-cvdso"}},
 	"arch/s390/kernel/vdso32":       {{name: "obj-vdso32"}},
 	"arch/s390/kernel/vdso64":       {{name: "obj-vdso64"}, {name: "obj-cvdso64"}},
+	// arm64's nVHE hypervisor compiles its list to %.nvhe.o objects and
+	// links them into kvm_nvhe.o, which obj-y lists.
+	"arch/arm64/kvm/hyp/nvhe": {{"hyp-obj-y", []string{"kvm_nvhe.o"}}},
 }
 
 // wrappers are objects that stand for a directory the arch's own rules
