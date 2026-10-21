@@ -310,6 +310,21 @@ func TestDiffRegionPlain(t *testing.T) {
 	}
 }
 
+// A commit that only wraps a line in #ifdef CONFIG_A ... #endif is a change
+// under CONFIG_A: the directive lines carry the branch they open.
+func TestDiffWrapsLine(t *testing.T) {
+	dir, _ := newKernel(t)
+	if err := os.WriteFile(filepath.Join(dir, "lib", "a.c"), []byte("#ifdef CONFIG_A\nint a = 1;\n#endif\n#ifdef CONFIG_B\nint ab;\n#endif\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "commit", "-q", "-a", "-m", "wrap")
+	head := git(t, dir, "rev-parse", "HEAD")
+	want := head + "\tCONFIG_A\n  lib/a.c\tbuilt\tCONFIG_A\tregion CONFIG_A\n"
+	if out, code := capture(t, "--tree", dir, "--build", "x86_64", "diff", head); code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}
+
 // diff judges a commit by the build --build names or the --config file is
 // for: a change to arm64 code applies to an arm64 config.
 func TestDiffBuild(t *testing.T) {
