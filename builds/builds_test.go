@@ -496,6 +496,16 @@ func TestBuildPlain(t *testing.T) {
 		"CONFIG_WIFI && ((CONFIG_WIFI=y && CONFIG_X86) || CONFIG_WIFI_PLATFORM_DRIVER=m) && CONFIG_WIFI_PLATFORM_DRIVER": "CONFIG_WIFI && CONFIG_WIFI_PLATFORM_DRIVER",
 		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_USB_LEDS=m) && CONFIG_WIFI_USB_LEDS":                               "CONFIG_WIFI && CONFIG_WIFI_USB_LEDS",
 		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_LED_DRIVER=m) && CONFIG_WIFI_LED_DRIVER":                           "CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_LED_DRIVER=m) && CONFIG_WIFI_LED_DRIVER",
+		// An OR drops a term on only with another term: WIFI_USB depends
+		// on WIFI, WIFI_DRIVER selects it; WIFI=y is not implied, and
+		// WIFI_LEDS and WIFI_USB imply nothing of each other.
+		"CONFIG_WIFI || CONFIG_WIFI_USB":                    "CONFIG_WIFI",
+		"CONFIG_WIFI || (CONFIG_FORCED && CONFIG_WIFI_USB)": "CONFIG_WIFI",
+		"CONFIG_WIFI || CONFIG_WIFI_USB=m":                  "CONFIG_WIFI",
+		"CONFIG_WIFI || CONFIG_WIFI_DRIVER":                 "CONFIG_WIFI",
+		"CONFIG_NEW && (CONFIG_WIFI || CONFIG_WIFI_USB)":    "CONFIG_NEW && CONFIG_WIFI",
+		"CONFIG_WIFI=y || CONFIG_WIFI_USB":                  "CONFIG_WIFI=y || CONFIG_WIFI_USB",
+		"CONFIG_WIFI_LEDS || CONFIG_WIFI_USB":               "CONFIG_WIFI_LEDS || CONFIG_WIFI_USB",
 	} {
 		if got := x86.Plain(p(t, in)).String(); got != want {
 			t.Errorf("Plain(%s) = %s, want %s", in, got, want)

@@ -47,7 +47,9 @@ directories and the `asm-generic` headers the `generic-y` and
 a file no Makefile names adds nothing. A header no listed file includes,
 as a uapi header only userspace reads, or one only generated sources,
 linker scripts or boot code read, is a `header`, whose condition is its
-region when that names a `CONFIG_` option and unknown otherwise.
+region when that names a `CONFIG_` option and unknown otherwise. An OR
+drops an option Kconfig lets on only with another of its terms:
+`CONFIG_JFFS2_FS || CONFIG_MTD` is `CONFIG_MTD`, as JFFS2 depends on MTD.
 
 An object `obj-y` lists is linked only where its directory is entered
 through `obj-y` too, so under `obj-$(CONFIG_X) += dir/` it needs
