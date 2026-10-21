@@ -1122,13 +1122,17 @@ obj-$(CONFIG_C) += c.nvhe.o
 
 // A rule with a recipe compiles an object of its directory from a source
 // elsewhere: xe builds i915's display code, libstub lib/ code under a
-// renamed object, rust/ its kernel crate from kernel/lib.rs. Rules without
-// a recipe only add prerequisites, and target-specific variables are not
+// renamed object, rust/ its kernel crate from kernel/lib.rs, lkdtm an
+// objcopied object from another object of the directory. Rules without a
+// recipe only add prerequisites, and target-specific variables are not
 // rules.
 func TestRules(t *testing.T) {
 	files := dirTree(`
 xe-$(CONFIG_D) += i915-display/a.o
 obj-$(CONFIG_XE) += xe.o
+obj-$(CONFIG_RO) += ro_objcopy.o
+$(obj)/ro_objcopy.o: $(obj)/ro.o FORCE
+	$(call if_changed,objcopy)
 lib-y := lib-ctype.o
 lib-y := $(patsubst %.o,%.stub.o,$(lib-y))
 obj-y += kernel.o own.o gen.o
@@ -1154,7 +1158,7 @@ $(obj)/alt/%.o: $(srctree)/lib/alt/%.c
 endif
 $(obj)/alt/%.o: $(srctree)/lib/base/%.c
 	$(call if_changed_rule,cc_o_c)
-`, "kernel/lib.rs", "other.c", "own.c")
+`, "kernel/lib.rs", "other.c", "own.c", "ro.c")
 	for _, f := range []string{"drivers/i915/display/a.c", "lib/ctype.c", "lib/cond.c", "lib/prereq.c", "lib/alt/x.c", "lib/base/x.c"} {
 		files[f] = ""
 	}
@@ -1165,6 +1169,7 @@ $(obj)/alt/%.o: $(srctree)/lib/base/%.c
 		"lib/cond.c":               "CONFIG_R",
 		"drivers/d/kernel/lib.rs":  "true",
 		"drivers/d/own.c":          "true",
+		"drivers/d/ro.c":           "CONFIG_RO",
 		"drivers/d/other.c":        "",
 		"lib/prereq.c":             "",
 		// A rule under a condition leaves the next one where it does

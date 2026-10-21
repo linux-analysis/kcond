@@ -415,7 +415,8 @@ func targetVar(l string) bool {
 // rule reads a rule line that compiles objects of the Makefile's
 // directory from a source: each target $(obj)/X.o or $(obj)/PRE%SUF.o with
 // the first prerequisite, a .c, .S, .rs or .s file holding the % when the
-// target does. A static pattern rule, targets: pattern: prerequisites,
+// target does, or another object of the directory, as lkdtm objcopies
+// rodata_objcopy.o of rodata.o. A static pattern rule, targets: pattern: prerequisites,
 // maps each target through its pattern instead, as the powerpc vDSO makes
 // gettimeofday-32.o of gettimeofday.S. Only a rule with a recipe names its
 // source; without one it adds prerequisites to a rule found by the
@@ -457,7 +458,8 @@ func (e *evaluator) rule(l string) (rules []rule, recipe bool) {
 		return nil, false
 	}
 	src := cleanPath(ps[0].text)
-	if !slices.Contains(sourceExts, path.Ext(src)) || !fs.ValidPath(src) {
+	object := path.Ext(src) == ".o" && strings.HasPrefix(src, e.dir+"/")
+	if (!slices.Contains(sourceExts, path.Ext(src)) && !object) || !fs.ValidPath(src) {
 		return nil, false
 	}
 	for _, t := range e.expand(targets) {
