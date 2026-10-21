@@ -479,6 +479,13 @@ func (v *Values) Modular(name string) (modular, known bool) {
 	return v.lookup(name)&M != 0, true
 }
 
+// Defined reports whether some Kconfig file the tree read defines the
+// symbol, named with or without CONFIG_, whatever its type.
+func (v *Values) Defined(name string) bool {
+	s := v.t.Syms[strings.TrimPrefix(name, "CONFIG_")]
+	return s != nil && len(s.Files) > 0
+}
+
 // maxEnumerate bounds the symbols whose combinations Range tries one by
 // one.
 const maxEnumerate = 10

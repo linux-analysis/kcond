@@ -57,7 +57,7 @@ endchoice
 		"arch/s390/Kconfig":         "config S390\n\tdef_bool y\n",
 
 		"drivers/Makefile": "obj-y += core.o page.o\nobj-$(CONFIG_MSM) += msm.o\nobj-$(CONFIG_WIFI) += wifi.o\n" +
-			"obj-$(CONFIG_FORCED) += forced.o\nobj-$(CONFIG_NEW) += new.o\nobj-$(CONFIG_DEAD) += dead.o\n",
+			"obj-$(CONFIG_FORCED) += forced.o\nobj-$(CONFIG_NEW) += new.o\nobj-$(CONFIG_DEAD) += dead.o\nobj-$(CONFIG_ARCH_QCOM) += qcom.o\n",
 		"drivers/Kconfig": `
 config COMPILE_TEST
 	bool "Compile also drivers which will not load"
@@ -85,7 +85,7 @@ config DEAD
 	for _, src := range []string{"arch/x86/kernel/entry_32.S", "arch/x86/kernel/entry_64.S", "arch/x86/kernel/setup.c",
 		"arch/x86/entry/vdso/vclock.c", "arch/arm64/kernel/cpu.c", "arch/s390/kernel/setup.c", "arch/mips/kernel/setup.c",
 		"drivers/core.c", "drivers/page.c", "drivers/msm.c", "drivers/wifi.c", "drivers/forced.c", "drivers/new.c",
-		"drivers/dead.c", "include/linux/wifi.h"} {
+		"drivers/dead.c", "drivers/qcom.c", "include/linux/wifi.h"} {
 		fsys[src] = &fstest.MapFile{}
 	}
 	return fsys
@@ -95,10 +95,6 @@ config DEAD
 // keyed by path with their region.
 func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) map[string]*FileArches {
 	t.Helper()
-	defined, err := Defined(fsys)
-	if err != nil {
-		t.Fatal(err)
-	}
 	out := map[string]*FileArches{}
 	conds := map[string]*kcond.Expr{}
 	for p, r := range regions {
@@ -110,11 +106,11 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 		out[p] = &FileArches{Path: p, Header: strings.HasSuffix(p, ".h")}
 	}
 	var builds, names []string
-	err = Each(fsys, nil, func(b Build) error {
+	err := Each(fsys, nil, func(b Build) error {
 		builds = append(builds, b.Arch)
 		names = append(names, b.Name)
 		for p, f := range out {
-			f.Add(b, conds[p], defined)
+			f.Add(b, conds[p])
 		}
 		return nil
 	})
@@ -132,7 +128,7 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 
 func TestBuildCond(t *testing.T) {
 	region := kcond.Const(true)
-	paths := []string{"drivers/msm.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
+	paths := []string{"drivers/msm.c", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
 	err := Each(archTree(), nil, func(b Build) error {
 		for _, p := range paths {
@@ -154,7 +150,9 @@ func TestBuildCond(t *testing.T) {
 	want := map[string]map[string]string{
 		// Kbuild lists the driver everywhere; whether MSM can be on is a
 		// Kconfig matter the arch labels settle.
-		"drivers/msm.c":              {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
+		"drivers/msm.c": {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
+		// A symbol only arm64's Kconfig defines is off in the other builds.
+		"drivers/qcom.c":             {"x86_64": "not built", "i386": "not built", "arm64": "built CONFIG_ARCH_QCOM", "s390": "not built"},
 		"arch/arm64/kernel/cpu.c":    {"x86_64": "not built", "i386": "not built", "arm64": "built true", "s390": "not built"},
 		"arch/x86/kernel/entry_32.S": {"x86_64": "not built", "i386": "built true", "arm64": "not built", "s390": "not built"},
 		"arch/mips/kernel/setup.c":   {"x86_64": "not built", "i386": "not built", "arm64": "not built", "s390": "not built"},
@@ -310,14 +308,14 @@ func TestFailedBuild(t *testing.T) {
 	// of its arch, but still rules out other arches' files.
 	b := Build{Arch: "riscv"}
 	region := kcond.Const(true)
-	if v := FileArch("drivers/core.c", false, region, b, nil); v != ArchMaybe {
+	if v := FileArch("drivers/core.c", false, region, b); v != ArchMaybe {
 		t.Errorf("generic file: %v, want maybe", v)
 	}
-	if v := FileArch("arch/arm64/kernel/cpu.c", false, region, b, nil); v != ArchNo {
+	if v := FileArch("arch/arm64/kernel/cpu.c", false, region, b); v != ArchNo {
 		t.Errorf("other arch's file: %v, want no", v)
 	}
 	x86 := Build{Arch: "x86", X86_64: true, Kbuild: &kbuild.Result{Arch: "x86"}}
-	if AlwaysBuilt("drivers/core.c", false, region, x86, nil) {
+	if AlwaysBuilt("drivers/core.c", false, region, x86) {
 		t.Error("always built without Kconfig values")
 	}
 	// Err says why: here the tree has no top-level Makefile.
@@ -436,11 +434,13 @@ func TestBuildPlain(t *testing.T) {
 		t.Fatal(err)
 	}
 	for in, want := range map[string]string{
-		"CONFIG_FORCED=y":                 "CONFIG_FORCED",
-		"CONFIG_FORCED=m || CONFIG_WIFI":  "CONFIG_WIFI",
-		"CONFIG_WIFI=y":                   "CONFIG_WIFI=y",
-		"CONFIG_NEW=y":                    "CONFIG_NEW=y",
-		`"defined(X)" && CONFIG_FORCED=y`: `"defined(X)" && CONFIG_FORCED`,
+		"CONFIG_FORCED=y":                  "CONFIG_FORCED",
+		"CONFIG_FORCED=m || CONFIG_WIFI":   "CONFIG_WIFI",
+		"CONFIG_WIFI=y":                    "CONFIG_WIFI=y",
+		"CONFIG_NEW=y":                     "CONFIG_NEW=y",
+		"CONFIG_ARCH_QCOM":                 "false",
+		"CONFIG_ARCH_QCOM=y || CONFIG_NEW": "CONFIG_NEW",
+		`"defined(X)" && CONFIG_FORCED=y`:  `"defined(X)" && CONFIG_FORCED`,
 	} {
 		if got := x86.Plain(p(t, in)).String(); got != want {
 			t.Errorf("Plain(%s) = %s, want %s", in, got, want)

@@ -73,7 +73,11 @@ type Build struct {
 	X86_64 bool   // the x86-64 build, which decides whether x86 always builds a file
 	Kbuild *kbuild.Result
 	Values *kconfig.Values // nil when the Kconfig could not be read
-	Err    error           // why Kbuild or Values is nil
+	// Defined are the CONFIG_ symbols some Kconfig file of the whole tree
+	// defines (see Defined), which tells a symbol of another arch from one
+	// no Kconfig has yet; nil when they could not be read.
+	Defined map[string]bool
+	Err     error // why Kbuild, Values or Defined is nil
 }
 
 // SrcArch returns the arch/ directory of a label arch in the tree,
@@ -162,9 +166,13 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 // absent. The crawls
 // share one scan of the tree's #include directives, x86's when given.
 func Each(fsys fs.FS, x86 *kbuild.Result, f func(Build) error) error {
+	defined, err := Defined(fsys)
+	if err != nil {
+		return err
+	}
 	var inc *kbuild.Includes
 	for _, sp := range buildSpecs(fsys) {
-		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == X86_64Build}
+		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == X86_64Build, Defined: defined}
 		sp.opts.Includes = inc
 		var crawlErr, kconfigErr error
 		if b.X86_64 && x86 != nil {
@@ -194,14 +202,15 @@ func Named(fsys fs.FS, name string) (b Build, ok bool) {
 	}
 	b = Build{Arch: sp.arch, Name: name, X86_64: name == X86_64Build}
 	var analysis sync.WaitGroup
-	var kconfigErr error
+	var kconfigErr, definedErr error
 	analysis.Go(func() { b.Values, kconfigErr = sp.values(fsys) })
+	analysis.Go(func() { b.Defined, definedErr = Defined(fsys) })
 	res, crawlErr := kbuild.Crawl(fsys, sp.opts)
 	if crawlErr == nil {
 		b.Kbuild = res
 	}
 	analysis.Wait()
-	b.Err = errors.Join(crawlErr, kconfigErr)
+	b.Err = errors.Join(crawlErr, kconfigErr, definedErr)
 	return b, true
 }
 
@@ -281,7 +290,8 @@ func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
 // architecture's directory (see PathArch) is not built, a header has no
 // Kbuild condition, a source gets what b's Makefiles say, and is unlisted
 // when b's crawl failed. The region is as b reads it, and both are written
-// plainly (see Build.Plain).
+// plainly (see Build.Plain); a source whose condition is then false, as one
+// listed under another arch's symbol, is not built.
 func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 	fc := FileCond{Header: header, Region: b.Plain(b.Region(path, region))}
 	switch pa := PathArch(path); {
@@ -293,7 +303,9 @@ func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 		fc.Status = StatusUnlisted
 	default:
 		fc.Status, fc.Kbuild = KbuildStatus(b.Kbuild, path)
-		fc.Kbuild = b.Plain(fc.Kbuild)
+		if fc.Kbuild = b.Plain(fc.Kbuild); fc.Kbuild != nil && fc.Kbuild.IsConst(false) {
+			fc.Status, fc.Kbuild = StatusNotBuilt, nil
+		}
 	}
 	return fc
 }
@@ -336,15 +348,15 @@ func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, A
 
 // FileArch tells whether a changed file may build in b: its Kbuild
 // condition there, ANDed with the region of its changed lines, must be
-// possible under b's Kconfig. Symbols not in defined become opaque (nil
+// possible under b's Kconfig. Symbols not in b.Defined become opaque (nil
 // frees nothing), so one no Kconfig file defines yet, often added by the
 // fix itself, neither rules the file in nor out.
-func FileArch(path string, header bool, region *kcond.Expr, b Build, defined map[string]bool) ArchVerdict {
+func FileArch(path string, header bool, region *kcond.Expr, b Build) ArchVerdict {
 	t, v := term(path, header, region, b)
 	if t == nil {
 		return v
 	}
-	if b.Values.Possible(free(t, defined)) {
+	if b.Values.Possible(free(t, b.Defined)) {
 		return ArchYes
 	}
 	return ArchNo
@@ -354,12 +366,12 @@ func FileArch(path string, header bool, region *kcond.Expr, b Build, defined map
 // configuration of b: a source listed under a condition that always holds,
 // or a header whose changed lines are under a CONFIG_ condition that does.
 // For x86 only the x86-64 build decides; the i386 one never does.
-func AlwaysBuilt(path string, header bool, region *kcond.Expr, b Build, defined map[string]bool) bool {
+func AlwaysBuilt(path string, header bool, region *kcond.Expr, b Build) bool {
 	if b.Arch == "x86" && !b.X86_64 {
 		return false
 	}
 	t, _ := term(path, header, region, b)
-	return t != nil && b.Values.Always(free(t, defined))
+	return t != nil && b.Values.Always(free(t, b.Defined))
 }
 
 // FileArches gathers what the builds of a file's revision say about it.
@@ -374,16 +386,16 @@ type FileArches struct {
 
 // Add records what build b says about the file, whose changed lines are
 // under region.
-func (f *FileArches) Add(b Build, region *kcond.Expr, defined map[string]bool) {
+func (f *FileArches) Add(b Build, region *kcond.Expr) {
 	if f.Verdicts == nil {
 		f.Verdicts = map[string]ArchVerdict{}
 	}
-	v := FileArch(f.Path, f.Header, region, b, defined)
+	v := FileArch(f.Path, f.Header, region, b)
 	if old, ok := f.Verdicts[b.Arch]; ok && (old == ArchYes || (old == ArchMaybe && v == ArchNo)) {
 		v = old
 	}
 	f.Verdicts[b.Arch] = v
-	if AlwaysBuilt(f.Path, f.Header, region, b, defined) {
+	if AlwaysBuilt(f.Path, f.Header, region, b) {
 		f.Always = append(f.Always, b.Arch)
 	}
 	if !slices.Contains(f.Present, b.Arch) {
