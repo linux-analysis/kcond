@@ -297,6 +297,9 @@ func macroDefs(name string, code Code, defs map[string]*Expr) *Expr {
 // next line does. String and character literals end at the end of the
 // line.
 func StripComments(line string, inComment bool) (string, bool) {
+	if !inComment && !strings.Contains(line, "/*") && !strings.Contains(line, "//") {
+		return line, false // nothing to strip, most lines
+	}
 	var b strings.Builder
 	var quote byte
 	for i := 0; i < len(line); i++ {
