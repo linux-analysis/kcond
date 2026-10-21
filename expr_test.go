@@ -56,6 +56,10 @@ func TestParseString(t *testing.T) {
 		{"CONFIG_A && !CONFIG_A=y", "CONFIG_A=m"},
 		{"CONFIG_A=m || (!CONFIG_A=m && CONFIG_A=y)", "CONFIG_A"},
 		{"(CONFIG_B && CONFIG_A=y) || (CONFIG_B && CONFIG_A=m)", "CONFIG_A && CONFIG_B"},
+		// A nested term the enclosing operator asserts is dropped.
+		{"CONFIG_A && ((CONFIG_A && CONFIG_B) || CONFIG_C)", "CONFIG_A && (CONFIG_B || CONFIG_C)"},
+		{"CONFIG_A && CONFIG_B && ((CONFIG_A && CONFIG_B) || CONFIG_C)", "CONFIG_A && CONFIG_B"},
+		{"CONFIG_A || ((CONFIG_A || CONFIG_B) && CONFIG_C)", "CONFIG_A || (CONFIG_B && CONFIG_C)"},
 		// An operand shared by every term of an OR is hoisted.
 		{"(CONFIG_A && CONFIG_B) || (CONFIG_A && CONFIG_C)", "CONFIG_A && (CONFIG_B || CONFIG_C)"},
 		{"(CONFIG_A && CONFIG_T) || (CONFIG_B && CONFIG_T) || (CONFIG_C && CONFIG_T && CONFIG_D)",

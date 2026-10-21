@@ -142,6 +142,9 @@ func nary(op Op, es []*Expr) *Expr {
 	if short {
 		return Const(absorbing)
 	}
+	if settled, ok := settle(op, args); ok {
+		return nary(op, settled)
+	}
 	args = absorb(op, args)
 	if op == OpOr {
 		if e := hoist(args); e != nil {
@@ -280,6 +283,44 @@ func hoist(args []*Expr) *Expr {
 		shared = append(shared, t)
 	}
 	return And(append(shared, Or(rest...))...)
+}
+
+// settle simplifies the arguments by one another: a term of an AND nested
+// in an OR of the AND is dropped when the AND asserts it, so that
+// A && (A && B || C) is A && (B || C); dually, A || (A || B) && C is
+// A || B && C. ok reports a change, after which the arguments are read again.
+func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
+	dual := OpOr
+	if op == OpOr {
+		dual = OpAnd
+	}
+	keys := map[string]bool{}
+	for _, a := range args {
+		keys[a.key] = true
+	}
+	out = make([]*Expr, 0, len(args))
+	for _, a := range args {
+		if a.Op != dual {
+			out = append(out, a)
+			continue
+		}
+		changed := false
+		members := make([]*Expr, 0, len(a.Args))
+		for _, m := range a.Args {
+			if m.Op == op {
+				kept := slices.DeleteFunc(slices.Clone(m.Args), func(t *Expr) bool { return keys[t.key] })
+				if len(kept) < len(m.Args) {
+					m, changed = nary(op, kept), true
+				}
+			}
+			members = append(members, m)
+		}
+		if changed {
+			a, ok = nary(dual, members), true
+		}
+		out = append(out, a)
+	}
+	return out, ok
 }
 
 // absorb drops every argument whose dual-operator terms are a superset of
