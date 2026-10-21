@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/linux-analysis/kcond"
 )
@@ -80,6 +81,9 @@ type Options struct {
 // each other, so the sets can be too wide but never too narrow, except for
 // what macro calls and joint constraints hide.
 type Values struct {
+	selectsOnce sync.Once
+	selects     map[string][]selection // by selecting symbol, see Selects
+
 	t       *Tree
 	sets    map[string]Set
 	off     map[string]bool
@@ -479,6 +483,84 @@ func (v *Values) Modular(name string) (modular, known bool) {
 	return v.lookup(name)&M != 0, true
 }
 
+// Selects lists, sorted and with CONFIG_, the symbols that name (with or
+// without CONFIG_) selects whenever it is enabled: they are y when it is y
+// and at least m when it is m. A select under a condition the symbol's own
+// dependencies do not settle is left out.
+func (v *Values) Selects(name string) []string {
+	name = strings.TrimPrefix(name, "CONFIG_")
+	v.selectsOnce.Do(func() {
+		v.selects = map[string][]selection{}
+		for _, s := range v.t.Syms {
+			if len(s.Files) == 0 {
+				continue
+			}
+			for _, e := range s.RevDep {
+				// e is the selecting symbol, ANDed with the condition of
+				// its "if" and then with the dependencies of its
+				// definition, which hold whenever it is enabled when that
+				// is its only one.
+				by := e
+				for by.Op == OpAnd {
+					by = by.L
+				}
+				if by.Op != OpSym || by.Quoted {
+					continue
+				}
+				if sel := v.t.Syms[by.Name]; e.Op == OpAnd && sel != nil && len(sel.DirDep) == 1 && sel.DirDep[0] == e.R {
+					e = e.L
+				}
+				if syms, ok := conjunctSyms(e); ok {
+					v.selects[by.Name] = append(v.selects[by.Name], selection{s.Name, syms})
+				}
+			}
+		}
+	})
+	var out []string
+	required := v.Requires(name)
+	for _, sel := range v.selects[name] {
+		if !slices.ContainsFunc(sel.under, func(c string) bool { return c != name && !slices.Contains(required, "CONFIG_"+c) }) {
+			out = append(out, "CONFIG_"+sel.sym)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// selection is a symbol some symbol selects, under the conjunction of
+// symbols the select carries: the selecting symbol and the condition of
+// its "if".
+type selection struct {
+	sym   string
+	under []string
+}
+
+// conjunctSyms returns the symbols ANDed in e; ok is false when e holds
+// anything else.
+func conjunctSyms(e *Expr) (syms []string, ok bool) {
+	switch {
+	case e == nil:
+		return nil, true
+	case e.Op == OpSym && !e.Quoted:
+		return []string{e.Name}, true
+	case e.Op == OpAnd:
+		l, ok := conjunctSyms(e.L)
+		if !ok {
+			return nil, false
+		}
+		r, ok := conjunctSyms(e.R)
+		return append(l, r...), ok
+	}
+	return nil, false
+}
+
+// Tristate reports whether the tree defines name (with or without
+// CONFIG_) as a tristate symbol.
+func (v *Values) Tristate(name string) bool {
+	s := v.t.Syms[strings.TrimPrefix(name, "CONFIG_")]
+	return s != nil && len(s.Files) > 0 && s.Type == Tristate
+}
+
 // Defined reports whether some Kconfig file the tree read defines the
 // symbol, named with or without CONFIG_, whatever its type.
 func (v *Values) Defined(name string) bool {
@@ -592,6 +674,36 @@ func (v *Values) Requires(name string) []string {
 	var out []string
 	for s := range v.requires(strings.TrimPrefix(name, "CONFIG_"), map[string]map[string]bool{}) {
 		out = append(out, "CONFIG_"+s)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// DependsOn returns the bool and tristate symbols, as CONFIG_ names, that
+// every definition of the symbol name (with or without CONFIG_) depends on
+// directly: Requires without the dependencies of those.
+func (v *Values) DependsOn(name string) []string {
+	name = strings.TrimPrefix(name, "CONFIG_")
+	s := v.t.Syms[name]
+	if s == nil || s.Choice != nil {
+		return nil
+	}
+	var common map[string]bool
+	for i, dep := range s.DirDep {
+		cur := map[string]bool{}
+		for _, d := range v.conjuncts(dep) {
+			cur[d] = true
+		}
+		if i == 0 {
+			common = cur
+		} else {
+			maps.DeleteFunc(common, func(k string, _ bool) bool { return !cur[k] })
+		}
+	}
+	delete(common, name)
+	var out []string
+	for d := range common {
+		out = append(out, "CONFIG_"+d)
 	}
 	slices.Sort(out)
 	return out

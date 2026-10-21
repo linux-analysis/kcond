@@ -71,6 +71,35 @@ config WIFI
 	tristate "Wireless"
 	depends on !S390
 
+config WIFI_USB
+	tristate "USB wireless"
+	depends on WIFI
+
+config WIFI_LEDS
+	bool "Wireless LEDs"
+	depends on WIFI
+
+config WIFI_DRIVER
+	tristate "A wireless driver"
+	depends on X86
+	select WIFI
+
+config WIFI_LED_DRIVER
+	tristate "A wireless LED driver"
+	depends on WIFI_LEDS
+
+config WIFI_USB_LEDS
+	tristate "LEDs of USB wireless devices"
+	depends on WIFI && WIFI_LEDS
+
+config WIFI_PLATFORM
+	bool "Platform wireless devices"
+	depends on X86
+
+config WIFI_PLATFORM_DRIVER
+	tristate "A platform wireless driver"
+	depends on WIFI && WIFI_PLATFORM
+
 config FORCED
 	bool
 
@@ -448,6 +477,25 @@ func TestBuildPlain(t *testing.T) {
 		"CONFIG_ARCH_QCOM":                 "false",
 		"CONFIG_ARCH_QCOM=y || CONFIG_NEW": "CONFIG_NEW",
 		`"defined(X)" && CONFIG_FORCED=y`:  `"defined(X)" && CONFIG_FORCED`,
+		// A gate Kconfig settles: WIFI_USB depends on WIFI, so WIFI_USB=y
+		// needs WIFI=y, and the directory is linked.
+		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_USB=m) && CONFIG_WIFI_USB":                        "CONFIG_WIFI && CONFIG_WIFI_USB",
+		"CONFIG_WIFI && ((CONFIG_WIFI=y && CONFIG_WIFI_USB=y) || CONFIG_WIFI_USB=m) && CONFIG_WIFI_USB": "CONFIG_WIFI && CONFIG_WIFI_USB",
+		"CONFIG_WIFI_USB=y && (CONFIG_WIFI=y || CONFIG_WIFI_USB=m)":                                     "CONFIG_WIFI_USB=y",
+		// WIFI_DRIVER selects WIFI, so WIFI_DRIVER=y makes WIFI y too.
+		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_DRIVER=m) && CONFIG_WIFI_DRIVER": "CONFIG_WIFI && CONFIG_WIFI_DRIVER",
+		// NEW is not among what WIFI_USB requires; a bool WIFI_LEDS=y
+		// does not need WIFI=y; a negation is not proved.
+		"CONFIG_NEW && (CONFIG_NEW=y || CONFIG_WIFI_USB=m) && CONFIG_WIFI_USB":     "CONFIG_NEW && (CONFIG_NEW=y || CONFIG_WIFI_USB=m) && CONFIG_WIFI_USB",
+		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_LEDS=m) && CONFIG_WIFI_LEDS": "CONFIG_WIFI=y && CONFIG_WIFI_LEDS",
+		"CONFIG_WIFI && (!CONFIG_FORCED || CONFIG_WIFI_USB=m) && CONFIG_WIFI_USB":  "(!CONFIG_FORCED || CONFIG_WIFI_USB=m) && CONFIG_WIFI && CONFIG_WIFI_USB",
+		// WIFI_LED_DRIVER=y needs only WIFI_LEDS=y, a bool WIFI=m lets be y;
+		// WIFI_USB_LEDS depends on WIFI itself, as well as on WIFI_LEDS;
+		// WIFI_PLATFORM_DRIVER=y has the bool WIFI_PLATFORM=y, and so the
+		// bool it requires, X86=y.
+		"CONFIG_WIFI && ((CONFIG_WIFI=y && CONFIG_X86) || CONFIG_WIFI_PLATFORM_DRIVER=m) && CONFIG_WIFI_PLATFORM_DRIVER": "CONFIG_WIFI && CONFIG_WIFI_PLATFORM_DRIVER",
+		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_USB_LEDS=m) && CONFIG_WIFI_USB_LEDS":                               "CONFIG_WIFI && CONFIG_WIFI_USB_LEDS",
+		"CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_LED_DRIVER=m) && CONFIG_WIFI_LED_DRIVER":                           "CONFIG_WIFI && (CONFIG_WIFI=y || CONFIG_WIFI_LED_DRIVER=m) && CONFIG_WIFI_LED_DRIVER",
 	} {
 		if got := x86.Plain(p(t, in)).String(); got != want {
 			t.Errorf("Plain(%s) = %s, want %s", in, got, want)
