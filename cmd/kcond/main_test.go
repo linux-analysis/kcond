@@ -501,12 +501,19 @@ func TestDiffRange(t *testing.T) {
 	}
 	git(t, dir, "commit", "-q", "-a", "-m", "b")
 	third := git(t, dir, "rev-parse", "HEAD")
+	// A side branch, and a merge of it that adds a line of its own.
+	git(t, dir, "checkout", "-q", "-b", "side")
+	side := commitFile(t, dir, "lib/b.c", "/* the b */\nint b = 3;\n")
+	git(t, dir, "checkout", "-q", "master")
+	git(t, dir, "merge", "-q", "--no-ff", "--no-commit", "side")
+	merge := commitFile(t, dir, "lib/a.c", "int a = 1;\n#ifdef CONFIG_B\nint ab;\n#endif\nint evil;\n")
 	cfg := filepath.Join(t.TempDir(), ".config")
 	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A range lists its commits oldest first; the commit line leads with
-	// the verdict and the condition, and the file rows follow.
+	// A range lists its commits oldest first, a merge with its own change
+	// only; the commit line leads with the verdict and the condition, and
+	// the file rows follow.
 	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", base+"..HEAD")
 	var lines []string
 	for l := range strings.Lines(out) {
@@ -514,8 +521,14 @@ func TestDiffRange(t *testing.T) {
 			lines = append(lines, strings.TrimSuffix(l, "\n"))
 		}
 	}
-	want := []string{fix + "\tapplies\tCONFIG_A", third + "\tnot applicable\tCONFIG_B"}
-	if code != 0 || !slices.Equal(lines, want) || !strings.Contains(out, "\n  lib/b.c\tbuilt\tCONFIG_B\tregion true\n") {
+	// The commits share a commit time, so only the merge, which descends
+	// from them all, is surely last.
+	want := []string{fix + "\tapplies\tCONFIG_A", third + "\tnot applicable\tCONFIG_B",
+		side + "\tnot applicable\tCONFIG_B", merge + "\tapplies\tCONFIG_A"}
+	sorted := slices.Sorted(slices.Values(lines))
+	slices.Sort(want)
+	if code != 0 || !slices.Equal(sorted, want) || !strings.Contains(out, "\n  lib/b.c\tbuilt\tCONFIG_B\tregion true\n") ||
+		!strings.HasSuffix(out, merge+"\tapplies\tCONFIG_A\n  lib/a.c\tbuilt\tCONFIG_A\tregion true\n") {
 		t.Errorf("diff range = %q, %d; want the commit lines %q", out, code, want)
 	}
 	if out, code := capture(t, "--tree", dir, "--json", "diff", "HEAD..HEAD"); code != 0 || out != "kcond: HEAD..HEAD has no commits\n[]\n" {

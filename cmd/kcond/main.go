@@ -60,7 +60,8 @@ commits:
   diff HASH|A..B...           the files a commit changes, the condition of
                               its changed lines, its arch label and, with
                               --config, the verdict; a range lists its
-                              commits oldest first, merges left out, with
+                              commits oldest first, a merge with only the
+                              hunks that differ from every parent, with
                               the Makefiles read at its end; --build or
                               --config reads that build only, without the
                               arch label
@@ -531,17 +532,23 @@ type commit struct {
 	revs []string
 }
 
-// commitsOf lists the commits the arguments name: hashes, and the commits
-// of each A..B range. A hash reads its Makefiles at itself, then at its
-// parent for the files it deletes; a range's commits read them at the
-// range's end first, the tree a config that is checked against them was
-// built from, so that the whole range takes one crawl.
-func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit, error) {
-	var commits []commit
+// commitsOf passes f the commits the arguments name, in order, with their
+// diffs: hashes, and the commits of each A..B range. A hash reads its
+// Makefiles at itself, then at its parent for the files it deletes; a
+// range's commits read them at the range's end first, the tree a config
+// that is checked against them was built from, so that the whole range
+// takes one crawl. A hash reads as its change to its first parent, and a
+// range's merge as its own change: the rest of what the merge brings is
+// the range's other commits.
+func commitsOf(ctx context.Context, o opts, dir string, args []string, f func(c commit, diff string)) error {
 	for _, a := range args {
 		_, end, ok := strings.Cut(a, "..")
 		if !ok {
-			commits = append(commits, commit{a, []string{a, a + "^"}})
+			d, err := gitfs.Diff(ctx, dir, a)
+			if err != nil {
+				return err
+			}
+			f(commit{a, []string{a, a + "^"}}, d)
 			continue
 		}
 		// A...B ends at B too, and A.. at HEAD.
@@ -550,16 +557,20 @@ func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit
 		}
 		hashes, err := gitfs.RevList(ctx, dir, a)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if len(hashes) == 0 {
 			fmt.Fprintf(o.stderr, "kcond: %s has no commits\n", a)
 		}
-		for _, h := range hashes {
-			commits = append(commits, commit{h, []string{end, h, h + "^"}})
+		err = gitfs.Diffs(ctx, dir, hashes, func(i int, d string) {
+			h := hashes[i]
+			f(commit{h, []string{end, h, h + "^"}}, d)
+		})
+		if err != nil {
+			return err
 		}
 	}
-	return commits, nil
+	return nil
 }
 
 func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
@@ -577,10 +588,6 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 	if o.cfg != nil {
 		cfg = o.cfg.Config
 	}
-	commits, err := commitsOf(ctx, o, dir, args)
-	if err != nil {
-		return err
-	}
 	cat, err := gitfs.NewCatFile(ctx, dir)
 	if err != nil {
 		return err
@@ -588,21 +595,23 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 	defer cat.Close()
 	// Every commit's files go through one crawl, which reads each
 	// revision once.
-	changes := make([][]change.FileChange, len(commits))
-	unread := make([]bool, len(commits)) // the commit changes nothing the build reads
+	var commits []commit
+	var changes [][]change.FileChange
+	var unread []bool // the commit changes nothing the build reads
 	var files []*crawl.File
-	for i, c := range commits {
-		d, err := gitfs.Diff(ctx, dir, c.hash)
-		if err != nil {
-			return err
-		}
+	err = commitsOf(ctx, o, dir, args, func(c commit, d string) {
 		all := change.Changes(cat, c.hash, d)
 		// A file whose changed lines are all comments decides nothing.
-		changes[i] = slices.DeleteFunc(slices.Clone(all), func(ch change.FileChange) bool { return !ch.Code })
-		unread[i] = len(changes[i]) == 0 && buildUnread(d, all)
-		for _, ch := range changes[i] {
+		code := slices.DeleteFunc(slices.Clone(all), func(ch change.FileChange) bool { return !ch.Code })
+		commits = append(commits, c)
+		changes = append(changes, code)
+		unread = append(unread, len(code) == 0 && buildUnread(d, all))
+		for _, ch := range code {
 			files = append(files, &crawl.File{Path: ch.Path, Header: ch.Header, Region: ch.Region, Revs: c.revs})
 		}
+	})
+	if err != nil {
+		return err
 	}
 	// The build the flags pick is the only one read, without the arch
 	// label and arches; without one, every build is, and the condition is

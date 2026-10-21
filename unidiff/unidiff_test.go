@@ -86,6 +86,51 @@ Binary files a/fw.bin and b/fw.bin differ
 	}
 }
 
+func TestFilesCombined(t *testing.T) {
+	// A merge's own hunk: the first parent's block is kept, the second
+	// parent's goto replaces the first's return.
+	diff := `diff --cc fs/btrfs/dev-replace.c
+index dc0834f920c3,bf0b78790171..af1b898029e8
+--- a/fs/btrfs/dev-replace.c
++++ b/fs/btrfs/dev-replace.c
+@@@ -625,7 -624,5 +625,7 @@@ static int btrfs_dev_replace_start(stru
+  	if (ret)
+  		return ret;
+ +	if (src_device->bdev)
+ +		bdev_deny_freeze(src_device->bdev);
+  	if (ret)
+- 		return ret;
++ 		goto leave;
+  	down_write(&dev_replace->rwsem);
+diff --cc "sp ace.c"
+@@@@ -1 -1 -1,2 +1,2 @@@@
+   a
+++ b
+`
+	files := Files(diff)
+	if len(files) != 2 {
+		t.Fatalf("Files returned %d files, want 2", len(files))
+	}
+	f := files[0]
+	if f.OldPath != "fs/btrfs/dev-replace.c" || f.NewPath != "fs/btrfs/dev-replace.c" || len(f.Hunks) != 2 {
+		t.Fatalf("dev-replace.c = %+v", f)
+	}
+	h0, h1 := f.Hunks[0], f.Hunks[1]
+	if h0.Parent != 0 || h0.OldStart != 625 || h0.OldLines != 7 || h0.NewStart != 625 || h0.NewLines != 7 ||
+		!slices.Equal(h0.Deleted, []int{630}) || !slices.Equal(h0.Added, []int{630}) {
+		t.Errorf("first parent's hunk = %+v", h0)
+	}
+	if h1.Parent != 1 || h1.OldStart != 624 || h1.OldLines != 5 || h1.Func != "static int btrfs_dev_replace_start(stru" ||
+		len(h1.Deleted) != 0 || !slices.Equal(h1.Added, []int{627, 628}) {
+		t.Errorf("second parent's hunk = %+v", h1)
+	}
+	// An octopus merge: the line only the third parent has.
+	if g := files[1]; g.NewPath != "sp ace.c" || len(g.Hunks) != 3 ||
+		!slices.Equal(g.Hunks[0].Added, []int{2}) || !slices.Equal(g.Hunks[1].Added, []int{2}) || g.Hunks[2].Added != nil {
+		t.Errorf("octopus = %+v", g)
+	}
+}
+
 func TestFilesMalformed(t *testing.T) {
 	// Garbage and truncated hunks must not panic.
 	for _, diff := range []string{
@@ -95,6 +140,9 @@ func TestFilesMalformed(t *testing.T) {
 		"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n",
 		"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n-x\n",
 		"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-x\n+y\n+z\n",
+		"diff --cc x\n@@@ -1 +1 @@@\n x\n",
+		"diff --cc x\n@@@ -1 -1 +1 @@@\n-\n++\n+-x\n",
+		"diff --cc x\n@@@\n@@ @@\n@@@ @@@\n",
 	} {
 		Files(diff)
 	}

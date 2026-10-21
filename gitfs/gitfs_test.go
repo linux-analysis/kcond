@@ -115,6 +115,58 @@ func TestDiffUserConfig(t *testing.T) {
 	}
 }
 
+func TestDiffs(t *testing.T) {
+	f := newFixture(t)
+	commit := func(args ...string) string {
+		git(t, f.dir, append([]string{"commit", "-q", "-m", "c"}, args...)...)
+		return git(t, f.dir, "rev-parse", "HEAD")
+	}
+	empty := commit("--allow-empty")
+	git(t, f.dir, "checkout", "-q", "-b", "side")
+	write(t, filepath.Join(f.dir, "side.c"), "int side;\n")
+	git(t, f.dir, "add", "side.c")
+	side := commit()
+	git(t, f.dir, "checkout", "-q", "master")
+	git(t, f.dir, "merge", "-q", "--no-ff", "-m", "merge", "side")
+	clean := git(t, f.dir, "rev-parse", "HEAD")
+	git(t, f.dir, "checkout", "-q", "side")
+	write(t, filepath.Join(f.dir, "side.c"), "int side = 2;\n")
+	side2 := commit("-a")
+	git(t, f.dir, "checkout", "-q", "master")
+	git(t, f.dir, "merge", "-q", "--no-ff", "--no-commit", "side")
+	write(t, filepath.Join(f.dir, "a.c"), "int evil;\n")
+	evil := commit("-a")
+
+	hashes := []string{f.c1, f.c2, empty, side, clean, side2, evil}
+	var got []string
+	err := Diffs(ctx, f.dir, hashes, func(i int, diff string) {
+		if i != len(got) {
+			t.Errorf("Diffs passed commit %d after %d", i, len(got))
+		}
+		got = append(got, diff)
+	})
+	if err != nil || len(got) != len(hashes) {
+		t.Fatalf("Diffs = %d diffs, %v; want %d", len(got), err, len(hashes))
+	}
+	// A commit that is no merge reads as Diff reads it; a merge as its own
+	// change.
+	for _, i := range []int{0, 1, 2, 3, 5} {
+		if want, err := Diff(ctx, f.dir, hashes[i]); err != nil || got[i] != want {
+			t.Errorf("Diffs[%d] = %q; want Diff's %q, %v", i, got[i], want, err)
+		}
+	}
+	if got[2] != "" || got[4] != "" || !strings.Contains(got[6], "diff --cc a.c\n") || strings.Contains(got[6], "side.c") {
+		t.Errorf("Diffs of the empty commit, the clean merge, the merge with an edit = %q, %q, %q", got[2], got[4], got[6])
+	}
+	blob := git(t, f.dir, "rev-parse", "HEAD:a.c")
+	if err := Diffs(ctx, f.dir, []string{f.c2, blob}, func(int, string) {}); err == nil {
+		t.Error("Diffs of a blob succeeded")
+	}
+	if err := Diffs(ctx, f.dir, nil, func(int, string) { t.Error("Diffs(nil) passed a diff") }); err != nil {
+		t.Errorf("Diffs(nil) = %v", err)
+	}
+}
+
 func TestTree(t *testing.T) {
 	f := newFixture(t)
 	write(t, filepath.Join(f.dir, "drivers", "net", "Makefile"), "obj-$(CONFIG_FOO) += foo.o\n")
@@ -265,8 +317,9 @@ func TestRevList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Oldest first and the merge left out; two follows one on their line.
-	sorted, want := slices.Clone(got), []string{one, two, side}
+	// Oldest first, the merge too; two follows one on their line.
+	merge := git(t, f.dir, "rev-parse", "HEAD")
+	sorted, want := slices.Clone(got), []string{one, two, side, merge}
 	slices.Sort(sorted)
 	slices.Sort(want)
 	if !slices.Equal(sorted, want) || slices.Index(got, one) > slices.Index(got, two) {
