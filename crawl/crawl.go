@@ -183,14 +183,14 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 	if len(found) == 0 {
 		return results, nil
 	}
-	// add records what build b says of the files, and of their
-	// architectures unless defined is nil.
-	add := func(b builds.Build, defined map[string]bool) error {
+	// add records what build b says of the files, and with arches of
+	// their architectures.
+	add := func(b builds.Build, arches bool) error {
 		for _, i := range found {
 			f, r := files[i], &results[i]
 			fc := builds.BuildCond(f.Path, f.Header, f.Region, b)
-			if defined != nil {
-				r.Arches.Add(b, f.Region, defined)
+			if arches {
+				r.Arches.Add(b, f.Region)
 			}
 			if !b.X86_64 {
 				if r.Builds == nil {
@@ -224,7 +224,7 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		case b.Kbuild == nil:
 			return nil, b.Err // e.g. the #include scan failed
 		}
-		return results, add(b, nil)
+		return results, add(b, false)
 	}
 	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: builds.Primary})
 	if errors.Is(err, kbuild.ErrNoMakefile) {
@@ -233,10 +233,6 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 	if err != nil {
 		return nil, err // e.g. the #include scan failed
 	}
-	defined, err := builds.Defined(tree)
-	if err != nil {
-		return nil, err
-	}
-	err = builds.Each(tree, res, func(b builds.Build) error { return add(b, defined) })
+	err = builds.Each(tree, res, func(b builds.Build) error { return add(b, true) })
 	return results, err
 }

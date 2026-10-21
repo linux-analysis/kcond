@@ -737,10 +737,6 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 			return err
 		}
 	}
-	defined, err := builds.Defined(fsys)
-	if err != nil {
-		return err
-	}
 	fas := make([]builds.FileArches, len(paths))
 	for i, p := range paths {
 		_, header := change.Kernel(p)
@@ -749,7 +745,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	err = builds.Each(fsys, nil, func(b builds.Build) error {
 		warn(o, b)
 		for i := range fas {
-			fas[i].Add(b, kcond.Const(true), defined)
+			fas[i].Add(b, kcond.Const(true))
 		}
 		return nil
 	})

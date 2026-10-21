@@ -76,13 +76,19 @@ func (b Build) Region(path string, region *kcond.Expr) *kcond.Expr {
 // Plain writes the tests of e on symbols that cannot be m in build b
 // plainly: X=y is X there, and X=m false. Kbuild conditions name both
 // values of an option, obj-$(CONFIG_X) giving obj-y and obj-m, and the
-// crawler cannot tell a bool from a tristate. Tristates, symbols b's
-// Kconfig lacks, and every symbol when it could not be read, stay.
+// crawler cannot tell a bool from a tristate. A symbol b's Kconfig lacks
+// is false when another Kconfig of the tree defines it, as $(CONFIG_X)
+// expands to nothing and #ifdef CONFIG_X fails there; one no Kconfig
+// defines stays, as do tristates and every symbol when the Kconfig could
+// not be read.
 func (b Build) Plain(e *kcond.Expr) *kcond.Expr {
 	if b.Values == nil || e == nil {
 		return e
 	}
 	return kcond.Rewrite(e, func(v *kcond.Expr) *kcond.Expr {
+		if kcond.IsSymbol(v.Name) && !b.Values.Defined(v.Name) && b.Defined[v.Name] {
+			return kcond.Const(false)
+		}
 		if !kcond.IsSymbol(v.Name) || v.State == kcond.Enabled {
 			return nil
 		}
