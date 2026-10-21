@@ -25,14 +25,19 @@ func TestPathArch(t *testing.T) {
 		// User-mode Linux on an x86 host is not part of an x86 kernel.
 		"arch/x86/um/asm/processor.h": "um",
 		"include/linux/fs.h":          "",
-		// lib/crypto keeps each arch's assembly and glue headers in its
-		// own directory.
-		"lib/crypto/arm64/sha3.h":       "arm64",
-		"lib/crypto/powerpc/md5-asm.S":  "powerpc",
-		"lib/crypto/tests/sha3_kunit.c": "",
-		"lib/crypto/sha3.c":             "",
-		"lib/crc/loongarch/crc32.h":     "loongarch",
-		"lib/crc/tests/crc_kunit.c":     "",
+		// lib/crypto, lib/crc and lib/raid keep each arch's assembly and
+		// glue code in its own directory.
+		"lib/crypto/arm64/sha3.h":        "arm64",
+		"lib/crypto/powerpc/md5-asm.S":   "powerpc",
+		"lib/crypto/tests/sha3_kunit.c":  "",
+		"lib/crypto/sha3.c":              "",
+		"lib/crc/loongarch/crc32.h":      "loongarch",
+		"lib/crc/tests/crc_kunit.c":      "",
+		"lib/raid/raid6/x86/pq_arch.h":   "x86",
+		"lib/raid/xor/um/xor_arch.h":     "um",
+		"lib/raid/xor/alpha/xor.c":       "alpha",
+		"lib/raid/xor/tests/xor_kunit.c": "",
+		"lib/raid/xor/xor-core.c":        "",
 	} {
 		if got := PathArch(p); got != want {
 			t.Errorf("PathArch(%s) = %q, want %q", p, got, want)

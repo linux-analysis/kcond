@@ -239,17 +239,22 @@ func Defined(fsys fs.FS) (map[string]bool, error) {
 	return defined, err
 }
 
-// libArches are the architectures lib/crypto and lib/crc keep a directory
-// of assembly and glue headers for, reached through -I$(src)/$(SRCARCH).
-var libArches = map[string]bool{"arm": true, "arm64": true, "loongarch": true, "mips": true, "powerpc": true, "riscv": true, "s390": true, "sparc": true, "x86": true}
+// srcArchDirs are the directories whose Makefiles add -I$(src)/$(SRCARCH),
+// keeping a directory of assembly and glue code per architecture.
+var srcArchDirs = []string{"lib/crc/", "lib/crypto/", "lib/raid/raid6/", "lib/raid/xor/"}
+
+// archNames are the directories of arch/.
+var archNames = map[string]bool{"alpha": true, "arc": true, "arm": true, "arm64": true, "csky": true, "hexagon": true,
+	"loongarch": true, "m68k": true, "microblaze": true, "mips": true, "nios2": true, "openrisc": true, "parisc": true,
+	"powerpc": true, "riscv": true, "s390": true, "sh": true, "sparc": true, "um": true, "x86": true, "xtensa": true}
 
 // PathArch is the architecture of a path under arch/, with the old i386,
 // x86_64, ppc and sparc64 directories folded into their successors, or
-// under lib/crypto/<arch>/ or lib/crc/<arch>/; "" for other paths.
+// under <dir>/<arch>/ for one of srcArchDirs; "" for other paths.
 func PathArch(p string) string {
-	for _, lib := range []string{"lib/crypto/", "lib/crc/"} {
-		if rest, ok := strings.CutPrefix(p, lib); ok {
-			if a, _, _ := strings.Cut(rest, "/"); libArches[a] {
+	for _, dir := range srcArchDirs {
+		if rest, ok := strings.CutPrefix(p, dir); ok {
+			if a, _, _ := strings.Cut(rest, "/"); archNames[a] {
 				return a
 			}
 		}
