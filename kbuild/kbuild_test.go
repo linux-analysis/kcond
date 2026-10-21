@@ -114,10 +114,11 @@ func TestOldLayout(t *testing.T) {
 		"bogus/bogus.c":            "",
 	})
 	expect(t, r, map[string]string{
-		"kernel/fork.c":           "true",
-		"block/bio.c":             "CONFIG_BLOCK",
-		"drivers/net/foo.c":       "CONFIG_FOO && CONFIG_NET",
-		"drivers/net/bar.c":       "CONFIG_NET",
+		"kernel/fork.c": "true",
+		"block/bio.c":   "CONFIG_BLOCK",
+		// net/ is linked where NET=y; a module is built wherever it is entered.
+		"drivers/net/foo.c":       "CONFIG_FOO && (CONFIG_FOO=m || CONFIG_NET=y) && CONFIG_NET",
+		"drivers/net/bar.c":       "CONFIG_NET=y",
 		"arch/x86/kernel/setup.c": "true",
 		"arch/x86/kernel/smp.c":   "CONFIG_SMP",
 		"arch/x86/pci/common.c":   "CONFIG_PCI",
@@ -166,9 +167,9 @@ obj-y			+= $(ARCH_DRIVERS)
 		"lib/string.c":             "",
 	})
 	expect(t, r, map[string]string{
-		"net/ipv4/tcp_bbr.c":       "CONFIG_INET && CONFIG_NET && CONFIG_TCP_CONG_BBR",
-		"arch/x86/kvm/svm/svm.c":   "CONFIG_KVM && CONFIG_KVM_AMD",
-		"arch/x86/kvm/svm/sev.c":   "CONFIG_KVM && ((CONFIG_KVM_AMD && CONFIG_KVM_AMD_SEV=y) || (CONFIG_KVM_AMD=m && CONFIG_KVM_AMD_SEV=m))",
+		"net/ipv4/tcp_bbr.c":       "CONFIG_INET && ((CONFIG_INET=y && CONFIG_NET=y) || CONFIG_TCP_CONG_BBR=m) && CONFIG_NET && CONFIG_TCP_CONG_BBR",
+		"arch/x86/kvm/svm/svm.c":   "CONFIG_KVM && (CONFIG_KVM=y || CONFIG_KVM_AMD=m) && CONFIG_KVM_AMD",
+		"arch/x86/kvm/svm/sev.c":   "CONFIG_KVM && (CONFIG_KVM=y || (CONFIG_KVM_AMD=m && CONFIG_KVM_AMD_SEV)) && ((CONFIG_KVM_AMD && CONFIG_KVM_AMD_SEV=y) || (CONFIG_KVM_AMD=m && CONFIG_KVM_AMD_SEV=m))",
 		"arch/x86/lib/memcpy_64.S": "true",
 		"arch/x86/power/cpu.c":     "CONFIG_PM",
 		"lib/string.c":             "true",
@@ -600,9 +601,11 @@ func TestDirectories(t *testing.T) {
 	})
 	expect(t, r, map[string]string{
 		"drivers/input/input-core.c":  "CONFIG_INPUT",
-		"drivers/input/serio/serio.c": "CONFIG_SERIO",
-		"drivers/shared/s.c":          "(CONFIG_SUB && CONFIG_Y) || CONFIG_X",
-		"drivers/sub/z/z.c":           "CONFIG_SUB && CONFIG_Z && CONFIG_ZZ",
+		"drivers/input/serio/serio.c": "CONFIG_SERIO=y",
+		"drivers/shared/s.c":          "(CONFIG_SUB=y && CONFIG_Y=y) || CONFIG_X=y",
+		// subdir-y descends without linking: a bool object there is never
+		// built, a tristate one only as a module.
+		"drivers/sub/z/z.c": "CONFIG_SUB && CONFIG_Z && CONFIG_ZZ=m",
 	})
 	if _, st := r.Lookup("drivers/input/serio/unlisted.c"); st != Unlisted {
 		t.Errorf("unlisted.c: %v, want Unlisted", st)
@@ -750,7 +753,7 @@ func TestNVHEList(t *testing.T) {
 	expect(t, r, map[string]string{
 		"arch/arm64/kvm/hyp/nvhe/hyp-init.S":   "CONFIG_KVM",
 		"arch/arm64/kvm/hyp/nvhe/list_debug.c": "CONFIG_KVM && CONFIG_LIST_HARDENED=y",
-		"arch/arm64/kvm/hyp/vhe/switch.c":      "CONFIG_KVM",
+		"arch/arm64/kvm/hyp/vhe/switch.c":      "CONFIG_KVM=y",
 		"arch/arm64/kvm/hyp/vgic.c":            "CONFIG_KVM",
 		"arch/arm64/lib/clear_page.S":          "CONFIG_KVM",
 	})
@@ -960,6 +963,66 @@ $(foreach target, $(basename $(intel-target-m)), $(eval $(call INTEL_OBJ_TARGET,
 		"drivers/platform/hid.c": {"CONFIG_HID", "CONFIG_HID=y", "CONFIG_HID=m"},
 		// A built-in composite leaves its fan-m members out.
 		"drivers/d/fan_hwmon.c": {"(CONFIG_F && CONFIG_H=y) || (CONFIG_F=m && CONFIG_H=m)", "CONFIG_F=y && CONFIG_H=y", "CONFIG_F=m && CONFIG_H"},
+	} {
+		files, _ := r.Lookup(p)
+		builtin, module := r.Module(p)
+		for i, got := range []*kcond.Expr{files, builtin, module} {
+			w, err := kcond.Parse(want[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == nil {
+				got = kcond.Const(false)
+			}
+			if eq, ok := kcond.Equal(got, w); !ok || !eq {
+				t.Errorf("%s: condition %d is %s, want %s", p, i, got, w)
+			}
+		}
+	}
+}
+
+// An obj-y object is compiled only where its directory has need-builtin,
+// which the top directories have and a directory passes to those its obj-y
+// lists. A directory entered through obj-m or subdir-y alone compiles its
+// modules, lib-y and always-y objects, not its obj-y ones.
+func TestBuiltinNeedsLinkedDirectory(t *testing.T) {
+	r := crawl(t, map[string]string{
+		"Makefile":         "drivers-y := drivers/\n",
+		"drivers/Makefile": "obj-$(CONFIG_PIN) += pinctrl/\nobj-m += mod/\nobj-y += core/\n",
+		"drivers/pinctrl/Makefile": `
+obj-$(CONFIG_MESON8) += meson8.o
+obj-y += plain.o
+lib-y += lib.o
+always-y += gen.o
+obj-y += sub/
+obj-$(CONFIG_T) += tools/
+subdir-y += tools
+`,
+		"drivers/pinctrl/meson8.c": "", "drivers/pinctrl/plain.c": "", "drivers/pinctrl/lib.c": "", "drivers/pinctrl/gen.c": "",
+		"drivers/pinctrl/sub/Makefile":   "obj-y += s.o\n",
+		"drivers/pinctrl/sub/s.c":        "",
+		"drivers/pinctrl/tools/Makefile": "obj-y += t.o\n",
+		"drivers/pinctrl/tools/t.c":      "",
+		"drivers/mod/Makefile":           "obj-$(CONFIG_B) += b.o\nobj-$(CONFIG_B) += deeper/\n",
+		"drivers/mod/b.c":                "",
+		"drivers/mod/deeper/Makefile":    "obj-y += d.o\n",
+		"drivers/mod/deeper/d.c":         "",
+		"drivers/core/Makefile":          "obj-$(CONFIG_C) += c.o\n",
+		"drivers/core/c.c":               "",
+	})
+	for p, want := range map[string][3]string{
+		"drivers/pinctrl/meson8.c": {"(CONFIG_PIN=y && CONFIG_MESON8=y) || (CONFIG_PIN && CONFIG_MESON8=m)", "CONFIG_PIN=y && CONFIG_MESON8=y", "CONFIG_PIN && CONFIG_MESON8=m"},
+		"drivers/pinctrl/plain.c":  {"CONFIG_PIN=y", "CONFIG_PIN=y", "false"},
+		"drivers/pinctrl/lib.c":    {"CONFIG_PIN", "CONFIG_PIN", "false"},
+		"drivers/pinctrl/gen.c":    {"CONFIG_PIN", "CONFIG_PIN", "false"},
+		// sub/ inherits need-builtin from pinctrl/.
+		"drivers/pinctrl/sub/s.c": {"CONFIG_PIN=y", "CONFIG_PIN=y", "false"},
+		// tools/ is linked where obj-y lists it, entered by subdir-y too.
+		"drivers/pinctrl/tools/t.c": {"CONFIG_PIN=y && CONFIG_T=y", "CONFIG_PIN=y && CONFIG_T=y", "false"},
+		"drivers/mod/b.c":           {"CONFIG_B=m", "false", "CONFIG_B=m"},
+		// Nothing under a module-only directory is ever linked.
+		"drivers/mod/deeper/d.c": {"false", "false", "false"},
+		"drivers/core/c.c":       {"CONFIG_C", "CONFIG_C=y", "CONFIG_C=m"},
 	} {
 		files, _ := r.Lookup(p)
 		builtin, module := r.Module(p)
@@ -1278,7 +1341,7 @@ core-y += arch/powerpc/kernel/
 	expect(t, r, map[string]string{
 		"arch/powerpc/kernel/entry_64.S":      "CONFIG_PPC64",
 		"arch/powerpc/kernel/entry_32.S":      "!CONFIG_PPC64",
-		"arch/powerpc/kernel/kexec/core_64.c": "CONFIG_KEXEC_CORE && CONFIG_PPC64",
+		"arch/powerpc/kernel/kexec/core_64.c": "CONFIG_KEXEC_CORE=y && CONFIG_PPC64", // kexec/ is linked where obj-y lists it
 		// Only exported variables cross into other Makefiles.
 		"arch/powerpc/kernel/local.c": "",
 	})
