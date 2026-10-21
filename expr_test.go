@@ -39,6 +39,9 @@ func TestParseString(t *testing.T) {
 		{"CONFIG_A && (CONFIG_A || CONFIG_B)", "CONFIG_A"},
 		{"(CONFIG_A && CONFIG_B) || (CONFIG_A && CONFIG_B && CONFIG_C)", "CONFIG_A && CONFIG_B"},
 		{"CONFIG_A || !CONFIG_A", "true"},
+		{"CONFIG_A || CONFIG_B || !(CONFIG_A || CONFIG_B)", "true"},
+		{"CONFIG_A && CONFIG_B && !(CONFIG_A && CONFIG_B)", "false"},
+		{"CONFIG_A || !(CONFIG_A || CONFIG_B)", "CONFIG_A || !(CONFIG_A || CONFIG_B)"},
 		{"CONFIG_A && !CONFIG_A", "false"},
 		// Tristate states of one symbol.
 		{"CONFIG_A=y || CONFIG_A=m", "CONFIG_A"},

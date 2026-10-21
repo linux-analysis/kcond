@@ -132,6 +132,11 @@ func nary(op Op, es []*Expr) *Expr {
 		if seen[Not(a).key] {
 			return Const(absorbing)
 		}
+		// A || B || !(A || B): the complement of an OR that was flattened
+		// into the arguments; dually for AND.
+		if a.Op == OpNot && a.Args[0].Op == op && !slices.ContainsFunc(a.Args[0].Args, func(e *Expr) bool { return !seen[e.key] }) {
+			return Const(absorbing)
+		}
 	}
 	args, short := tristate(op, args)
 	if short {
