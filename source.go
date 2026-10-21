@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Source describes the lines of a C file: Cpp[i], Guard[i] and Code[i]
+// Source describes the lines of a C file: Cpp[i], Guard[i] and Text[i]
 // belong to line i+1.
 type Source struct {
 	// Cpp is the preprocessor condition of each line (see Lines).
@@ -16,8 +16,10 @@ type Source struct {
 	// condition, an else branch its negation. A line holding tokens from
 	// several branches gets the OR of their conditions.
 	Guard []*Expr
-	// Code tells whether a line holds anything but comments and blanks.
-	Code []bool
+	// Text is the code of a line with its comments stripped and its
+	// whitespace outside literals collapsed; it is empty for comment and
+	// blank lines.
+	Text []string
 	// GuardErr is set when the statement structure could not be followed,
 	// typically a brace opened in two #ifdef branches; every Guard is then
 	// true.
@@ -40,8 +42,8 @@ func Analyze(src []byte, code Code) (*Source, error) {
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	s := &Source{Cpp: cpp, Guard: make([]*Expr, len(lines)), Code: make([]bool, len(lines))}
-	toks := tokenize(lines, cpp, s.Code)
+	s := &Source{Cpp: cpp, Guard: make([]*Expr, len(lines)), Text: make([]string, len(lines))}
+	toks := tokenize(lines, cpp, s.Text)
 	conds, err := guards(toks)
 	for i := range s.Guard {
 		s.Guard[i] = Const(true)
@@ -76,15 +78,15 @@ var cPunct = []string{"<<=", ">>=", "...", "->", "++", "--", "&&", "||", "==", "
 
 // tokenize splits the C code of lines into tokens. Comments, string and
 // character literals (kept as one token), preprocessor directives and lines
-// in regions the preprocessor always drops are skipped. It marks in code the
-// lines that hold anything but comments and blanks.
-func tokenize(lines []string, cpp []*Expr, code []bool) []ctoken {
+// in regions the preprocessor always drops are skipped. It stores in text
+// each line's code with comments stripped and whitespace collapsed.
+func tokenize(lines []string, cpp []*Expr, text []string) []ctoken {
 	var toks []ctoken
 	inComment, directive := false, false
 	for li, line := range lines {
 		stripped, nextComment := StripComments(line, inComment)
 		trimmed := strings.TrimSpace(stripped)
-		code[li] = trimmed != ""
+		text[li] = collapse(stripped)
 		dead := cpp[li].IsConst(false)
 		startsDirective := !directive && strings.HasPrefix(trimmed, "#")
 		inDirective := directive || startsDirective
@@ -96,6 +98,37 @@ func tokenize(lines []string, cpp []*Expr, code []bool) []ctoken {
 		toks = append(toks, lexLine(stripped, li)...)
 	}
 	return toks
+}
+
+// collapse trims line and writes each run of blanks outside string and
+// character literals as one space, so that only a change of spacing inside
+// a literal, which the compiled code keeps, tells two lines apart.
+func collapse(line string) string {
+	var b strings.Builder
+	var quote byte
+	blank := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote == 0 && strings.IndexByte(" \t\r\f\v", c) >= 0 {
+			blank = true
+			continue
+		}
+		if blank && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		blank = false
+		b.WriteByte(c)
+		switch {
+		case quote != 0 && c == '\\' && i+1 < len(line):
+			i++
+			b.WriteByte(line[i])
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && (c == '"' || c == '\''):
+			quote = c
+		}
+	}
+	return b.String()
 }
 
 // lexLine tokenizes one line with its comments stripped.

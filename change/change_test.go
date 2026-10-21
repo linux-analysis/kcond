@@ -60,6 +60,21 @@ diff --git a/drivers/foo/comment.c b/drivers/foo/comment.c
  int x;
 +/* explain x */
  int y;
+diff --git a/drivers/foo/moved.c b/drivers/foo/moved.c
+--- a/drivers/foo/moved.c
++++ b/drivers/foo/moved.c
+@@ -1,2 +1,3 @@
+-int a; /* a */
++/* a */
++int a;
+ int b;
+diff --git a/drivers/foo/reorder.c b/drivers/foo/reorder.c
+--- a/drivers/foo/reorder.c
++++ b/drivers/foo/reorder.c
+@@ -1,2 +1,2 @@
++int b;
+ int a;
+-int b;
 diff --git a/Documentation/foo.rst b/Documentation/foo.rst
 --- a/Documentation/foo.rst
 +++ b/Documentation/foo.rst
@@ -78,15 +93,19 @@ diff --git a/include/linux/foo.h b/include/linux/foo.h
 
 func TestChanges(t *testing.T) {
 	b := blobs{
-		"h^:drivers/foo/foo.c":    fooOld,
-		"h:drivers/foo/foo.c":     fooNew,
-		"h:drivers/foo/comment.c": "int x;\n/* explain x */\nint y;\n",
-		"h^:include/linux/foo.h":  "#ifdef CONFIG_FOO\nint foo(void);\n#endif\n",
-		"h:include/linux/foo.h":   "#ifdef CONFIG_FOO\nint foo(int);\n#endif\n",
+		"h^:drivers/foo/foo.c":     fooOld,
+		"h:drivers/foo/foo.c":      fooNew,
+		"h:drivers/foo/comment.c":  "int x;\n/* explain x */\nint y;\n",
+		"h^:drivers/foo/moved.c":   "int a; /* a */\nint b;\n",
+		"h:drivers/foo/moved.c":    "/* a */\nint a;\nint b;\n",
+		"h^:drivers/foo/reorder.c": "int a;\nint b;\n",
+		"h:drivers/foo/reorder.c":  "int b;\nint a;\n",
+		"h^:include/linux/foo.h":   "#ifdef CONFIG_FOO\nint foo(void);\n#endif\n",
+		"h:include/linux/foo.h":    "#ifdef CONFIG_FOO\nint foo(int);\n#endif\n",
 	}
 	got := Changes(b, "h", diff)
-	if len(got) != 3 {
-		t.Fatalf("Changes = %+v, want foo.c, comment.c and foo.h", got)
+	if len(got) != 5 {
+		t.Fatalf("Changes = %+v, want foo.c, comment.c, moved.c, reorder.c and foo.h", got)
 	}
 	foo := got[0]
 	if foo.Path != "drivers/foo/foo.c" || foo.Header || !foo.Code ||
@@ -97,7 +116,14 @@ func TestChanges(t *testing.T) {
 	if c := got[1]; c.Path != "drivers/foo/comment.c" || c.Code {
 		t.Errorf("comment.c = %+v, want no code change", c)
 	}
-	if h := got[2]; h.Path != "include/linux/foo.h" || !h.Header || h.Region.String() != "CONFIG_FOO=y" {
+	if c := got[2]; c.Path != "drivers/foo/moved.c" || c.Code || c.Region.String() != "false" {
+		t.Errorf("moved.c = %+v, want no code change", c)
+	}
+	// A line moved past other code is a code change.
+	if c := got[3]; c.Path != "drivers/foo/reorder.c" || !c.Code || c.Region.String() != "true" {
+		t.Errorf("reorder.c = %+v, want a code change", c)
+	}
+	if h := got[4]; h.Path != "include/linux/foo.h" || !h.Header || h.Region.String() != "CONFIG_FOO=y" {
 		t.Errorf("foo.h = %+v", h)
 	}
 }

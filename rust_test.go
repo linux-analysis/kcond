@@ -1,6 +1,7 @@
 package kcond
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -129,21 +130,9 @@ func TestRustCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []bool{false, false, true, true, false}; !equalBools(s.Code, want) {
-		t.Errorf("Code = %v, want %v", s.Code, want)
+	if want := []string{"", "", "# [ cfg ( CONFIG_A ) ]", "fn a ( ) { }", ""}; !slices.Equal(s.Text, want) {
+		t.Errorf("Text = %q, want %q", s.Text, want)
 	}
-}
-
-func equalBools(a, b []bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // A < in a match guard opens no generics, so the cfg ends with its arm; a

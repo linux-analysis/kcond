@@ -401,8 +401,8 @@ func region(fsys fs.FS, q query) (*kcond.Expr, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", q.path, err)
 	}
-	if q.to > len(src.Code) {
-		return nil, fmt.Errorf("%s:%s: the file has %d lines", q.path, q.lines(), len(src.Code))
+	if q.to > len(src.Text) {
+		return nil, fmt.Errorf("%s:%s: the file has %d lines", q.path, q.lines(), len(src.Text))
 	}
 	var terms []*kcond.Expr
 	for i := q.from - 1; i < q.to; i++ {
