@@ -324,45 +324,73 @@ func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
 }
 
 // absorb drops every argument whose dual-operator terms are a superset of
-// another argument's: in an Or, A && B is dropped next to A.
+// another argument's: in an Or, A && B is dropped next to A. The arguments
+// are indexed by their sorted terms, and the proper subsets of an
+// argument's terms are looked up, so that an OR of thousands of options
+// costs its arguments, not their pairs; an argument of more than maxAbsorb
+// terms, or of more subsets than there are arguments, is compared with
+// every other.
 func absorb(op Op, args []*Expr) []*Expr {
 	dual := OpOr
 	if op == OpOr {
 		dual = OpAnd
 	}
-	terms := make([]map[string]bool, len(args))
+	terms := make([][]string, len(args))
+	index := map[string]bool{}
 	for i, a := range args {
-		terms[i] = map[string]bool{}
+		ks := []string{a.key}
 		if a.Op == dual {
-			for _, t := range a.Args {
-				terms[i][t.key] = true
+			ks = make([]string, len(a.Args))
+			for j, t := range a.Args {
+				ks[j] = t.key
 			}
-		} else {
-			terms[i][a.key] = true
+			slices.Sort(ks)
 		}
-	}
-	subset := func(a, b map[string]bool) bool {
-		for k := range a {
-			if !b[k] {
-				return false
-			}
-		}
-		return true
+		terms[i] = ks
+		index[strings.Join(ks, "\x00")] = true
 	}
 	var out []*Expr
 	for i, a := range args {
-		absorbed := false
-		for j := range args {
-			if i != j && len(terms[j]) < len(terms[i]) && subset(terms[j], terms[i]) {
-				absorbed = true
-				break
-			}
-		}
-		if !absorbed {
+		if !absorbed(index, terms, i) {
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+// maxAbsorb bounds the terms whose subsets absorb looks up.
+const maxAbsorb = 12
+
+// absorbed tells whether argument i's terms have a proper, non-empty subset
+// that is an argument of its own.
+func absorbed(index map[string]bool, terms [][]string, i int) bool {
+	ks := terms[i]
+	n := len(ks)
+	if n > maxAbsorb || 1<<n > len(terms) {
+		set := map[string]bool{}
+		for _, k := range ks {
+			set[k] = true
+		}
+		for j, other := range terms {
+			if j != i && len(other) < n && !slices.ContainsFunc(other, func(k string) bool { return !set[k] }) {
+				return true
+			}
+		}
+		return false
+	}
+	var sub []string
+	for mask := 1; mask < 1<<n-1; mask++ {
+		sub = sub[:0]
+		for b := range n {
+			if mask&(1<<b) != 0 {
+				sub = append(sub, ks[b])
+			}
+		}
+		if index[strings.Join(sub, "\x00")] {
+			return true
+		}
+	}
+	return false
 }
 
 // String renders e in the syntax Parse accepts. Opaque atoms that are not
