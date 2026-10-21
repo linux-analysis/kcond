@@ -761,8 +761,10 @@ func listedDir(w string) (string, bool) {
 
 // dirConditions propagates conditions from the roots down the edges, from
 // a directory to those its Makefile lists or from a source to the files it
-// #includes. A directory listed by several Makefiles gets the OR. The graph can have
-// cycles through ../, so it iterates to a fixed point.
+// #includes. A directory listed by several Makefiles gets the OR. A file is
+// computed once its parents are, so that each is computed once; the graph
+// can have cycles through ../, whose files are then iterated to a fixed
+// point, a file changing 32 times stopping, which bounds a cycle.
 func dirConditions(roots map[string]*kcond.Expr, edges map[string][]edge, rootKbuild bool) map[string]*kcond.Expr {
 	conds := map[string]*kcond.Expr{}
 	for d, c := range roots {
@@ -771,34 +773,82 @@ func dirConditions(roots map[string]*kcond.Expr, edges map[string][]edge, rootKb
 	if rootKbuild {
 		conds[""] = kcond.Const(true)
 	}
-	children := make([]string, 0, len(edges))
-	for d := range edges {
-		children = append(children, d)
-	}
-	slices.Sort(children)
-	for range 32 {
-		changed := false
-		for _, d := range children {
-			var terms []*kcond.Expr
-			if c, ok := roots[d]; ok {
-				terms = append(terms, c)
-			}
-			for _, e := range edges[d] {
-				if pc, ok := conds[e.parent]; ok {
-					terms = append(terms, kcond.And(pc, e.cond))
-				}
-			}
-			if len(terms) == 0 {
-				continue
-			}
-			c := kcond.Or(terms...)
-			if old, ok := conds[d]; !ok || old.String() != c.String() {
-				conds[d] = c
-				changed = true
+	files := slices.Sorted(maps.Keys(edges))
+	children := map[string][]string{} // by parent
+	pending := map[string]int{}       // parents still to compute
+	for _, d := range files {
+		for _, e := range edges[d] {
+			children[e.parent] = append(children[e.parent], d)
+			if edges[e.parent] != nil {
+				pending[d]++
 			}
 		}
-		if !changed {
-			break
+	}
+	// compute reads d's condition off its parents' and reports a change.
+	compute := func(d string) bool {
+		var terms []*kcond.Expr
+		if c, ok := roots[d]; ok {
+			terms = append(terms, c)
+		}
+		for _, e := range edges[d] {
+			pc, ok := conds[e.parent]
+			if !ok {
+				continue
+			}
+			if !e.cond.IsConst(true) { // most #include lines are unconditional
+				pc = kcond.And(pc, e.cond)
+			}
+			terms = append(terms, pc)
+		}
+		if len(terms) == 0 {
+			return false
+		}
+		c := kcond.Or(terms...)
+		if old, ok := conds[d]; ok && old.String() == c.String() {
+			return false
+		}
+		conds[d] = c
+		return true
+	}
+	var queue []string
+	for _, d := range files {
+		if pending[d] == 0 {
+			queue = append(queue, d)
+		}
+	}
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		compute(d)
+		for _, ch := range children[d] {
+			if pending[ch]--; pending[ch] == 0 {
+				queue = append(queue, ch)
+			}
+		}
+	}
+	// The rest are in or below a cycle.
+	queued := map[string]bool{}
+	for _, d := range files {
+		if pending[d] > 0 {
+			queue = append(queue, d)
+			queued[d] = true
+		}
+	}
+	changes := map[string]int{}
+	for len(queue) > 0 {
+		d := queue[0]
+		queue = queue[1:]
+		delete(queued, d)
+		if !compute(d) {
+			continue
+		}
+		if changes[d]++; changes[d] < 32 {
+			for _, ch := range children[d] {
+				if !queued[ch] {
+					queued[ch] = true
+					queue = append(queue, ch)
+				}
+			}
 		}
 	}
 	delete(conds, "")
