@@ -250,6 +250,41 @@ func TestDiffOutsideBuild(t *testing.T) {
 	}
 }
 
+// A commit's files are judged by the Makefiles at the commit, so a file
+// it lists for the first time is built; a file it deletes is read at the
+// parent.
+func TestDiffReadsMakefilesAtCommit(t *testing.T) {
+	dir, _ := newKernel(t)
+	if err := os.WriteFile(filepath.Join(dir, "lib", "Makefile"), []byte("obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o c.o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lib", "c.c"), []byte("int c = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "rm", "-q", "lib/b.c")
+	git(t, dir, "commit", "-q", "-a", "-m", "c for b")
+	head := git(t, dir, "rev-parse", "HEAD")
+	out, code := capture(t, "--tree", dir, "--json", "--build", "x86_64", "diff", head)
+	var res []commitResult
+	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || len(res[0].Files) != 2 {
+		t.Fatalf("diff = %q, %d", out, code)
+	}
+	for _, f := range res[0].Files {
+		switch f.Path {
+		case "lib/c.c":
+			if f.Status != "built" || f.Kbuild != "CONFIG_B" || f.Rev != head {
+				t.Errorf("lib/c.c = %+v, want built under CONFIG_B at %s", f, head)
+			}
+		case "lib/b.c":
+			if f.Status != "built" || f.Rev != head+"^" {
+				t.Errorf("lib/b.c = %+v, want built at the parent", f)
+			}
+		default:
+			t.Errorf("unexpected file %+v", f)
+		}
+	}
+}
+
 // diff judges a commit by the build --build names or the --config file is
 // for: a change to arm64 code applies to an arm64 config.
 func TestDiffBuild(t *testing.T) {
