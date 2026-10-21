@@ -25,6 +25,14 @@ func TestPathArch(t *testing.T) {
 		// User-mode Linux on an x86 host is not part of an x86 kernel.
 		"arch/x86/um/asm/processor.h": "um",
 		"include/linux/fs.h":          "",
+		// lib/crypto keeps each arch's assembly and glue headers in its
+		// own directory.
+		"lib/crypto/arm64/sha3.h":       "arm64",
+		"lib/crypto/powerpc/md5-asm.S":  "powerpc",
+		"lib/crypto/tests/sha3_kunit.c": "",
+		"lib/crypto/sha3.c":             "",
+		"lib/crc/loongarch/crc32.h":     "loongarch",
+		"lib/crc/tests/crc_kunit.c":     "",
 	} {
 		if got := PathArch(p); got != want {
 			t.Errorf("PathArch(%s) = %q, want %q", p, got, want)

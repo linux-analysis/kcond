@@ -236,10 +236,21 @@ func Defined(fsys fs.FS) (map[string]bool, error) {
 	return defined, err
 }
 
+// libArches are the architectures lib/crypto and lib/crc keep a directory
+// of assembly and glue headers for, reached through -I$(src)/$(SRCARCH).
+var libArches = map[string]bool{"arm": true, "arm64": true, "loongarch": true, "mips": true, "powerpc": true, "riscv": true, "s390": true, "sparc": true, "x86": true}
+
 // PathArch is the architecture of a path under arch/, with the old i386,
-// x86_64, ppc and sparc64 directories folded into their successors; "" for
-// other paths.
+// x86_64, ppc and sparc64 directories folded into their successors, or
+// under lib/crypto/<arch>/ or lib/crc/<arch>/; "" for other paths.
 func PathArch(p string) string {
+	for _, lib := range []string{"lib/crypto/", "lib/crc/"} {
+		if rest, ok := strings.CutPrefix(p, lib); ok {
+			if a, _, _ := strings.Cut(rest, "/"); libArches[a] {
+				return a
+			}
+		}
+	}
 	rest, ok := strings.CutPrefix(p, "arch/")
 	if !ok {
 		return ""
