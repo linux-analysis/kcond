@@ -756,15 +756,22 @@ func resolveObject(ev *evaluator, obj string, k modes, visited map[string]bool) 
 // in the order a stem's source is looked for.
 var sourceExts = []string{".c", ".S", ".rs", ".s"}
 
+// maxObjectRules bounds the rules followed from one object to another.
+const maxObjectRules = 4
+
 // leaf maps an object to the source it is compiled from. A renamed object
 // such as foo.stub.o or foo.pi.o, which a rule makes of foo.o, comes from
 // foo's source when foo.stub itself has none. An object without a source
 // of its own name comes from the one a rule of the Makefile names, as xe
-// compiles i915's display code; make would prefer the rule even where the
-// object's own source exists, which no tree has. Make takes the first rule
-// that applies, so one under a condition leaves the later ones where it
-// does not hold.
-func leaf(ev *evaluator, obj string, k modes) []listing {
+// compiles i915's display code, or from the object the rule makes it of,
+// as lkdtm objcopies rodata_objcopy.o of rodata.o; make would prefer the
+// rule even where the object's own source exists, which no tree has. Make
+// takes the first rule that applies, so one under a condition leaves the
+// later ones where it does not hold.
+func leaf(ev *evaluator, obj string, k modes) []listing { return leafAt(ev, obj, k, 0) }
+
+// leafAt is leaf, depth rules away from the listed object.
+func leafAt(ev *evaluator, obj string, k modes, depth int) []listing {
 	stem := cleanPath(path.Join(ev.dir, strings.TrimSuffix(obj, ".o")))
 	stems := slices.Compact([]string{stem, strings.TrimSuffix(stem, path.Ext(stem))})
 	for _, s := range stems {
@@ -786,10 +793,21 @@ func leaf(ev *evaluator, obj string, k modes) []listing {
 			}
 			src := patsubst(ru.target, ru.source, s+".o")
 			c := kcond.And(ru.cond, kcond.Not(taken))
-			if _, err := fs.Stat(ev.fsys, src); err != nil || c.IsConst(false) {
+			if c.IsConst(false) {
 				continue
 			}
-			out = append(out, listing{ev.dir, src, k.and(c), objFlags(ev, obj, path.Ext(src))})
+			var more []listing
+			if path.Ext(src) == ".o" {
+				if depth < maxObjectRules {
+					more = leafAt(ev, strings.TrimPrefix(src, ev.dir+"/"), k.and(c), depth+1)
+				}
+			} else if _, err := fs.Stat(ev.fsys, src); err == nil {
+				more = []listing{{ev.dir, src, k.and(c), objFlags(ev, obj, path.Ext(src))}}
+			}
+			if len(more) == 0 {
+				continue
+			}
+			out = append(out, more...)
 			if taken = kcond.Or(taken, ru.cond); taken.IsConst(true) {
 				return out
 			}
