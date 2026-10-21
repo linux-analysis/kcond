@@ -17,7 +17,7 @@ func TestParseIf(t *testing.T) {
 		{"IS_ENABLED(CONFIG_A)", "CONFIG_A"},
 		{"IS_BUILTIN(CONFIG_A)", "CONFIG_A=y"},
 		{"IS_MODULE(CONFIG_A)", "CONFIG_A=m"},
-		{"IS_REACHABLE(CONFIG_A)", "CONFIG_A"},
+		{"IS_REACHABLE(CONFIG_A)", `("defined(MODULE)" && CONFIG_A=m) || CONFIG_A=y`},
 		{"config_enabled(CONFIG_A)", "CONFIG_A=y"},
 		{"config_enabled(CONFIG_A_MODULE)", "CONFIG_A=m"},
 		{"!config_enabled(CONFIG_A) && IS_ENABLED(CONFIG_B)", "!CONFIG_A=y && CONFIG_B"},

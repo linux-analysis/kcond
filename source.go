@@ -426,14 +426,18 @@ func (p *guardParser) and() *Expr {
 	return And(terms...)
 }
 
-var guardMacros = map[string]State{"IS_ENABLED": Enabled, "IS_BUILTIN": Builtin,
-	"IS_MODULE": Module, "IS_REACHABLE": Enabled}
+var guardMacros = map[string]State{"IS_ENABLED": Enabled, "IS_BUILTIN": Builtin, "IS_MODULE": Module}
 
 // macroCall converts a macro applied to a CONFIG_ symbol, such as
 // IS_ENABLED(CONFIG_X); ok is false for macros that test no option.
+// IS_REACHABLE(CONFIG_X) holds for X=y, and for X=m only in code compiled
+// into a module, where MODULE is defined.
 func macroCall(name, sym string) (e *Expr, ok bool) {
 	if st, ok := guardMacros[name]; ok {
 		return Var(sym, st), true
+	}
+	if name == "IS_REACHABLE" {
+		return Or(Var(sym, Builtin), And(Var(sym, Module), defined("MODULE"))), true
 	}
 	if name == "config_enabled" {
 		return defined(sym), true

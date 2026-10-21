@@ -215,25 +215,44 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	}
 }
 
+// commitFile writes one file of the kernel at dir and commits it.
+func commitFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", name)
+	git(t, dir, "commit", "-q", "-m", name)
+	return git(t, dir, "rev-parse", "HEAD")
+}
+
+// Code under IS_REACHABLE(CONFIG_B) in an object built into the kernel
+// needs B built in too: a.o is builtin, so B=m leaves it out.
+func TestDiffReachable(t *testing.T) {
+	dir, _ := newKernel(t)
+	hash := commitFile(t, dir, "lib/a.c", "int a = 1;\n#if IS_REACHABLE(CONFIG_B)\nint ab = 2;\n#endif\n")
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\nCONFIG_B=m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", hash)
+	want := hash + "\tnot applicable\tCONFIG_A && CONFIG_B=y\n  lib/a.c\tbuilt\tCONFIG_A\tregion CONFIG_A && CONFIG_B=y\n"
+	if code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}
+
 // A commit the build reads nothing of does not apply, nor does one that
 // only adds a comment to a line; one that changes a Makefile may.
 func TestDiffOutsideBuild(t *testing.T) {
 	dir, _ := newKernel(t)
-	commit := func(name, content string) string {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		git(t, dir, "add", name)
-		git(t, dir, "commit", "-q", "-m", name)
-		return git(t, dir, "rev-parse", "HEAD")
-	}
-	docs := commit("Documentation/a.rst", "A\n")
-	comment := commit("lib/c.c", "/* c */\nint c;\n")
-	makefile := commit("lib/Makefile", "obj-$(CONFIG_A) += a.o c.o\nobj-$(CONFIG_B) += b.o\n")
-	moved := commit("lib/a.c", "int a = 1; /* a */\n#ifdef CONFIG_B\nint ab;\n#endif\n")
+	docs := commitFile(t, dir, "Documentation/a.rst", "A\n")
+	comment := commitFile(t, dir, "lib/c.c", "/* c */\nint c;\n")
+	makefile := commitFile(t, dir, "lib/Makefile", "obj-$(CONFIG_A) += a.o c.o\nobj-$(CONFIG_B) += b.o\n")
+	moved := commitFile(t, dir, "lib/a.c", "int a = 1; /* a */\n#ifdef CONFIG_B\nint ab;\n#endif\n")
 	cfg := filepath.Join(t.TempDir(), ".config")
 	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_A=y\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -292,12 +311,7 @@ func TestDiffReadsMakefilesAtCommit(t *testing.T) {
 func TestDiffRegionPlain(t *testing.T) {
 	dir, _ := newKernel(t)
 	commit := func(ab, aa string) string {
-		src := "int a = 1;\n#ifdef CONFIG_B\n" + ab + "\n#endif\n#ifdef CONFIG_A\n" + aa + "\n#endif\n"
-		if err := os.WriteFile(filepath.Join(dir, "lib", "a.c"), []byte(src), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		git(t, dir, "commit", "-q", "-a", "-m", "a")
-		return git(t, dir, "rev-parse", "HEAD")
+		return commitFile(t, dir, "lib/a.c", "int a = 1;\n#ifdef CONFIG_B\n"+ab+"\n#endif\n#ifdef CONFIG_A\n"+aa+"\n#endif\n")
 	}
 	commit("int ab;", "int aa;")
 	for _, c := range []struct{ ab, aa, want string }{
@@ -315,11 +329,7 @@ func TestDiffRegionPlain(t *testing.T) {
 // under CONFIG_A: the directive lines carry the branch they open.
 func TestDiffWrapsLine(t *testing.T) {
 	dir, _ := newKernel(t)
-	if err := os.WriteFile(filepath.Join(dir, "lib", "a.c"), []byte("#ifdef CONFIG_A\nint a = 1;\n#endif\n#ifdef CONFIG_B\nint ab;\n#endif\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, dir, "commit", "-q", "-a", "-m", "wrap")
-	head := git(t, dir, "rev-parse", "HEAD")
+	head := commitFile(t, dir, "lib/a.c", "#ifdef CONFIG_A\nint a = 1;\n#endif\n#ifdef CONFIG_B\nint ab;\n#endif\n")
 	want := head + "\tCONFIG_A\n  lib/a.c\tbuilt\tCONFIG_A\tregion CONFIG_A\n"
 	if out, code := capture(t, "--tree", dir, "--build", "x86_64", "diff", head); code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
