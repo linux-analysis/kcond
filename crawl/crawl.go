@@ -31,9 +31,9 @@ type Result struct {
 	// Rev is the revision whose Makefiles were read: the first of the
 	// file's Revs that has it, or "" when none does.
 	Rev string
-	// Cond is the file's condition in the primary build. A header has the
-	// status header, or not built when it is another arch's, and a source
-	// no revision has is missing.
+	// Cond is the file's condition in the primary build. A header whose
+	// includers are not known has the status header, one of another arch
+	// is not built, and a source no revision has is missing.
 	Cond builds.FileCond
 	// Builds holds the file's conditions in the builds other than the
 	// primary one at Rev, by name.
@@ -69,9 +69,9 @@ func initial(f *File) Result {
 
 // Resolve fills in the Kbuild condition and the architectures of every
 // file at the first of its revisions that has it, crawling each revision
-// once for all the files that need it. Headers have no Kbuild condition,
-// but take part to get a revision whose builds decide their
-// architectures. The results are in the order of files.
+// once for all the files that need it. A header is never missing: without
+// a revision that has it, it keeps the status header. The results are in
+// the order of files.
 func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Result, error) {
 	workers := opts.Workers
 	if workers <= 0 {
@@ -214,8 +214,12 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		}
 		return ctx.Err()
 	}
+	var paths []string
+	for _, i := range found {
+		paths = append(paths, files[i].Path)
+	}
 	if build != "" {
-		b, ok := builds.Named(tree, build)
+		b, ok := builds.Named(tree, build, paths)
 		switch {
 		case errors.Is(b.Err, kbuild.ErrNoMakefile):
 			return nil, nil
@@ -226,13 +230,13 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		}
 		return results, add(b, false)
 	}
-	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: builds.Primary})
+	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: builds.Primary, Lookups: paths})
 	if errors.Is(err, kbuild.ErrNoMakefile) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err // e.g. the #include scan failed
 	}
-	err = builds.Each(tree, res, func(b builds.Build) error { return add(b, true) })
+	err = builds.Each(tree, res, nil, func(b builds.Build) error { return add(b, true) })
 	return results, err
 }

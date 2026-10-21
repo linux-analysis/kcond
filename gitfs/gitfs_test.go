@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,8 +163,9 @@ func TestTreeGrep(t *testing.T) {
 	git(t, f.dir, "add", "lib")
 	git(t, f.dir, "commit", "-q", "-m", "Add a library")
 	head := git(t, f.dir, "rev-parse", "HEAD")
-	// Colors the user asks for do not reach the listing.
+	// Colors and line numbers the user asks for do not reach the listing.
 	git(t, f.dir, "config", "color.ui", "always")
+	git(t, f.dir, "config", "grep.lineNumber", "true")
 
 	tree, err := Open(ctx, f.dir, head)
 	if err != nil {
@@ -177,6 +179,10 @@ func TestTreeGrep(t *testing.T) {
 	}
 	if got, err := tree.Grep([]string{"no such text"}, "*.c"); err != nil || len(got) != 0 {
 		t.Errorf("Grep for missing text = %q, %v; want nothing", got, err)
+	}
+	lines, err := tree.GrepLines([]string{"include"}, "*.c", "*.h")
+	if want := map[string][]string{"lib/x.c": {`#include "y.c"`}, "lib/x.h": {`#include "y.c"`}}; err != nil || !maps.EqualFunc(lines, want, slices.Equal) {
+		t.Errorf("GrepLines = %q, %v; want %q", lines, err, want)
 	}
 	// git grep exits with 1 for an object it cannot read too.
 	oid := git(t, f.dir, "rev-parse", head+":lib/z.S")

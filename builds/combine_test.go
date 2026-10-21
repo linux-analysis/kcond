@@ -59,6 +59,14 @@ func TestCombine(t *testing.T) {
 			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
 			{Header: true, Status: StatusHeader, Region: tr},
 		}, "CONFIG_A", false},
+		{"built header counts next to sources", []FileCond{
+			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
+			{Header: true, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: p(t, "CONFIG_R")},
+		}, "CONFIG_A || (CONFIG_H && CONFIG_R)", false},
+		{"built header leaves other headers in", []FileCond{
+			{Header: true, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: tr},
+			{Header: true, Status: StatusHeader, Region: p(t, "CONFIG_P")},
+		}, "CONFIG_H || CONFIG_P", false},
 		{"unlisted source", []FileCond{
 			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
 			{Status: StatusUnlisted, Region: tr},

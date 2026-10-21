@@ -607,8 +607,12 @@ func TestDirectories(t *testing.T) {
 	if _, st := r.Lookup("drivers/input/serio/unlisted.c"); st != Unlisted {
 		t.Errorf("unlisted.c: %v, want Unlisted", st)
 	}
-	if _, st := r.Lookup("drivers/input/serio/serio.h"); st != NotSource {
-		t.Errorf("serio.h: %v, want NotSource", st)
+	// A header no file includes is unlisted; a Makefile is no source.
+	if _, st := r.Lookup("drivers/input/serio/serio.h"); st != Unlisted {
+		t.Errorf("serio.h: %v, want Unlisted", st)
+	}
+	if _, st := r.Lookup("drivers/input/serio/Makefile"); st != NotSource {
+		t.Errorf("Makefile: %v, want NotSource", st)
 	}
 	if _, st := r.Lookup("drivers/never/never.c"); st != NotBuilt {
 		t.Errorf("never.c: %v, want NotBuilt", st)

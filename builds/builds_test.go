@@ -58,6 +58,7 @@ endchoice
 
 		"drivers/Makefile": "obj-y += core.o page.o\nobj-$(CONFIG_MSM) += msm.o\nobj-$(CONFIG_WIFI) += wifi.o\n" +
 			"obj-$(CONFIG_FORCED) += forced.o\nobj-$(CONFIG_NEW) += new.o\nobj-$(CONFIG_DEAD) += dead.o\nobj-$(CONFIG_ARCH_QCOM) += qcom.o\n",
+		"drivers/msm.c": "#include \"msm.h\"\n",
 		"drivers/Kconfig": `
 config COMPILE_TEST
 	bool "Compile also drivers which will not load"
@@ -84,7 +85,7 @@ config DEAD
 	}
 	for _, src := range []string{"arch/x86/kernel/entry_32.S", "arch/x86/kernel/entry_64.S", "arch/x86/kernel/setup.c",
 		"arch/x86/entry/vdso/vclock.c", "arch/arm64/kernel/cpu.c", "arch/s390/kernel/setup.c", "arch/mips/kernel/setup.c",
-		"drivers/core.c", "drivers/page.c", "drivers/msm.c", "drivers/wifi.c", "drivers/forced.c", "drivers/new.c",
+		"drivers/core.c", "drivers/page.c", "drivers/msm.h", "drivers/wifi.c", "drivers/forced.c", "drivers/new.c",
 		"drivers/dead.c", "drivers/qcom.c", "include/linux/wifi.h"} {
 		fsys[src] = &fstest.MapFile{}
 	}
@@ -106,7 +107,7 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 		out[p] = &FileArches{Path: p, Header: strings.HasSuffix(p, ".h")}
 	}
 	var builds, names []string
-	err := Each(fsys, nil, func(b Build) error {
+	err := Each(fsys, nil, nil, func(b Build) error {
 		builds = append(builds, b.Arch)
 		names = append(names, b.Name)
 		for p, f := range out {
@@ -128,9 +129,9 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 
 func TestBuildCond(t *testing.T) {
 	region := kcond.Const(true)
-	paths := []string{"drivers/msm.c", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
+	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
-	err := Each(archTree(), nil, func(b Build) error {
+	err := Each(archTree(), nil, nil, func(b Build) error {
 		for _, p := range paths {
 			fc := BuildCond(p, strings.HasSuffix(p, ".h"), region, b)
 			s := fc.Status
@@ -151,6 +152,9 @@ func TestBuildCond(t *testing.T) {
 		// Kbuild lists the driver everywhere; whether MSM can be on is a
 		// Kconfig matter the arch labels settle.
 		"drivers/msm.c": {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
+		// A header is built where the sources including it are; a public
+		// one has no includers to follow.
+		"drivers/msm.h": {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
 		// A symbol only arm64's Kconfig defines is off in the other builds.
 		"drivers/qcom.c":             {"x86_64": "not built", "i386": "not built", "arm64": "built CONFIG_ARCH_QCOM", "s390": "not built"},
 		"arch/arm64/kernel/cpu.c":    {"x86_64": "not built", "i386": "not built", "arm64": "built true", "s390": "not built"},
@@ -290,7 +294,7 @@ func TestBuildsShareIncludes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := map[string]kbuild.Status{}
-	err = Each(fsys, x86, func(b Build) error {
+	err = Each(fsys, x86, nil, func(b Build) error {
 		_, got[b.Name] = b.Kbuild.Lookup("drivers/part.c")
 		return nil
 	})
@@ -320,10 +324,10 @@ func TestFailedBuild(t *testing.T) {
 	}
 	// Err says why: here the tree has no top-level Makefile.
 	noMake := fstest.MapFS{"arch/riscv/Kconfig": {Data: []byte("config RISCV\n\tdef_bool y\n")}}
-	if b, ok := Named(noMake, "riscv"); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
+	if b, ok := Named(noMake, "riscv", nil); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
 		t.Errorf("Named without a Makefile = %+v, %v; want Err ErrNoMakefile", b, ok)
 	}
-	err := Each(noMake, nil, func(b Build) error {
+	err := Each(noMake, nil, nil, func(b Build) error {
 		if !errors.Is(b.Err, kbuild.ErrNoMakefile) || b.Values == nil {
 			t.Errorf("Each without a Makefile: %s: Err %v, Values %v", b.Name, b.Err, b.Values)
 		}
@@ -360,14 +364,16 @@ func TestBuildRegion(t *testing.T) {
 // A source's lines under #ifndef MODULE are compiled where it is built into
 // the kernel: lp.c where PRINTER=y, aha152x.c, compiled on its own and
 // #included into the aha152x_cs module, where either is built in; both.c,
-// listed in obj-y and obj-m, where obj-y wins. In headers the atom stays.
+// listed in obj-y and obj-m, where obj-y wins. A header follows the
+// sources including it; in a public header the atom stays.
 func TestRegionModule(t *testing.T) {
 	fsys := fstest.MapFS{
 		"Makefile": {Data: []byte("drivers-y += drivers/\n")},
 		"drivers/Makefile": {Data: []byte("obj-$(CONFIG_PRINTER) += lp.o\nobj-$(CONFIG_S) += aha152x.o\n" +
 			"obj-$(CONFIG_PC) += aha152x_cs.o\naha152x_cs-objs := aha152x_core.o\nobj-$(CONFIG_A) += both.o\nobj-$(CONFIG_B) += both.o\n")},
 		"drivers/aha152x_core.c": {Data: []byte("#include \"aha152x.c\"\n")},
-		"drivers/lp.c":           {}, "drivers/aha152x.c": {}, "drivers/both.c": {},
+		"drivers/lp.c":           {Data: []byte("#include \"lp.h\"\n")},
+		"drivers/lp.h":           {}, "drivers/aha152x.c": {}, "drivers/both.c": {},
 	}
 	res, err := kbuild.Crawl(fsys, kbuild.Options{Arch: "x86"})
 	if err != nil {
@@ -377,10 +383,11 @@ func TestRegionModule(t *testing.T) {
 	region := p(t, `!"defined(MODULE)"`)
 	for path, want := range map[string]string{
 		"drivers/lp.c":      "CONFIG_PRINTER=y",
+		"drivers/lp.h":      "CONFIG_PRINTER=y",
 		"drivers/aha152x.c": "CONFIG_PC=y || CONFIG_S=y",
 		"drivers/both.c":    "CONFIG_A=y || CONFIG_B=y",
 	} {
-		c, unknown := Combine([]FileCond{BuildCond(path, false, region, b)})
+		c, unknown := Combine([]FileCond{BuildCond(path, strings.HasSuffix(path, ".h"), region, b)})
 		if eq, ok := kcond.Equal(c, p(t, want)); !ok || !eq || unknown {
 			t.Errorf("%s: %s (unknown %v), want %s", path, c, unknown, want)
 		}
@@ -425,7 +432,7 @@ func equal(a, b *kcond.Expr) bool {
 // X and X=m as false. Tristates, and symbols its Kconfig lacks, stay.
 func TestBuildPlain(t *testing.T) {
 	var x86 Build
-	if err := Each(archTree(), nil, func(b Build) error {
+	if err := Each(archTree(), nil, nil, func(b Build) error {
 		if b.X86_64 {
 			x86 = b
 		}

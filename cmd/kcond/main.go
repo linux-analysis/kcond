@@ -309,16 +309,16 @@ func buildName(o opts) string {
 }
 
 // each calls f with each build of the tree, or only the one buildName
-// gives.
-func each(fsys fs.FS, o opts, f func(builds.Build) error) error {
+// gives; lookups are the files f looks up.
+func each(fsys fs.FS, o opts, lookups []string, f func(builds.Build) error) error {
 	build := buildName(o)
 	if build == "" {
-		return builds.Each(fsys, nil, func(b builds.Build) error {
+		return builds.Each(fsys, nil, lookups, func(b builds.Build) error {
 			warn(o, b)
 			return f(b)
 		})
 	}
-	b, ok := builds.Named(fsys, build)
+	b, ok := builds.Named(fsys, build, lookups)
 	if !ok {
 		return fmt.Errorf("the tree has no %s build", build)
 	}
@@ -457,7 +457,11 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 		}
 	}
 	var rows []fileCond
-	err = each(fsys, o, func(b builds.Build) error {
+	paths := make([]string, len(queries))
+	for i, q := range queries {
+		paths[i] = q.path
+	}
+	err = each(fsys, o, paths, func(b builds.Build) error {
 		for i, q := range queries {
 			_, header := change.Kernel(q.path)
 			fc := builds.BuildCond(q.path, header, regions[i], b)
@@ -747,7 +751,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 		_, header := change.Kernel(p)
 		fas[i] = builds.FileArches{Path: p, Header: header}
 	}
-	err = builds.Each(fsys, nil, func(b builds.Build) error {
+	err = builds.Each(fsys, nil, paths, func(b builds.Build) error {
 		warn(o, b)
 		for i := range fas {
 			fas[i].Add(b, kcond.Const(true))
@@ -858,7 +862,7 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 	}
 	defer close()
 	var rows []symbolInfo
-	err = each(fsys, o, func(b builds.Build) error {
+	err = each(fsys, o, nil, func(b builds.Build) error {
 		if b.Values == nil {
 			return fmt.Errorf("the %s Kconfig could not be read", b.Name)
 		}
@@ -908,7 +912,7 @@ func oneBuild(fsys fs.FS, o opts) (builds.Build, error) {
 	if name == "" {
 		name = builds.X86_64Build
 	}
-	b, ok := builds.Named(fsys, name)
+	b, ok := builds.Named(fsys, name, nil)
 	if !ok {
 		return builds.Build{}, fmt.Errorf("the tree has no %s build", name)
 	}

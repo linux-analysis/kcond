@@ -165,7 +165,8 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 // nil and Err saying why, so its files stay unknown rather than its arch
 // absent. The crawls
 // share one scan of the tree's #include directives, x86's when given.
-func Each(fsys fs.FS, x86 *kbuild.Result, f func(Build) error) error {
+// lookups are the files f will look up (see kbuild.Options).
+func Each(fsys fs.FS, x86 *kbuild.Result, lookups []string, f func(Build) error) error {
 	defined, err := Defined(fsys)
 	if err != nil {
 		return err
@@ -173,7 +174,7 @@ func Each(fsys fs.FS, x86 *kbuild.Result, f func(Build) error) error {
 	var inc *kbuild.Includes
 	for _, sp := range buildSpecs(fsys) {
 		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == X86_64Build, Defined: defined}
-		sp.opts.Includes = inc
+		sp.opts.Includes, sp.opts.Lookups = inc, lookups
 		var crawlErr, kconfigErr error
 		if b.X86_64 && x86 != nil {
 			b.Kbuild, inc = x86, x86.Includes
@@ -194,12 +195,14 @@ func Each(fsys fs.FS, x86 *kbuild.Result, f func(Build) error) error {
 // Named returns the build named name (one of ConfigBuilds) of the tree,
 // its crawl and its Kconfig analysis run at once. ok is false when the
 // tree has no such architecture; a crawl or Kconfig that fails leaves its
-// field nil and Err saying why.
-func Named(fsys fs.FS, name string) (b Build, ok bool) {
+// field nil and Err saying why. lookups are the files the caller will look
+// up (see kbuild.Options).
+func Named(fsys fs.FS, name string, lookups []string) (b Build, ok bool) {
 	sp, ok := specOf(fsys, name)
 	if !ok {
 		return Build{}, false
 	}
+	sp.opts.Lookups = lookups
 	b = Build{Arch: sp.arch, Name: name, X86_64: name == X86_64Build}
 	var analysis sync.WaitGroup
 	var kconfigErr, definedErr error
@@ -298,18 +301,18 @@ func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
 }
 
 // BuildCond is a changed file's condition in build b: a file under another
-// architecture's directory (see PathArch) is not built, a header has no
-// Kbuild condition, a source gets what b's Makefiles say, and is unlisted
-// when b's crawl failed. The region is as b reads it, and both are written
-// plainly (see Build.Plain); a source whose condition is then false, as one
-// listed under another arch's symbol, is not built.
+// architecture's directory (see PathArch) is not built, a source gets what
+// b's Makefiles say, a header the condition of the files that include it
+// when they are all known (see kbuild.Result.Lookup) and the status header
+// otherwise, and either is unlisted when b's crawl failed. The region is
+// as b reads it, and both are written plainly (see Build.Plain); a file
+// whose condition is then false, as one listed under another arch's
+// symbol, is not built.
 func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 	fc := FileCond{Header: header, Region: b.Plain(b.Region(path, region))}
 	switch pa := PathArch(path); {
 	case pa != "" && pa != b.Arch:
 		fc.Status = StatusNotBuilt
-	case header:
-		fc.Status = StatusHeader
 	case b.Kbuild == nil:
 		fc.Status = StatusUnlisted
 	default:
@@ -317,6 +320,9 @@ func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 		if fc.Kbuild = b.Plain(fc.Kbuild); fc.Kbuild != nil && fc.Kbuild.IsConst(false) {
 			fc.Status, fc.Kbuild = StatusNotBuilt, nil
 		}
+	}
+	if header && fc.Status == StatusUnlisted {
+		fc.Status = StatusHeader
 	}
 	return fc
 }
@@ -333,7 +339,13 @@ func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, A
 		return nil, ArchMaybe
 	}
 	region = b.Region(path, region)
-	if header {
+	var e *kcond.Expr
+	st := kbuild.Unlisted
+	if b.Kbuild != nil {
+		e, st = b.Kbuild.Lookup(path)
+	}
+	// A header whose includers are not known is judged by its region.
+	if header && st != kbuild.Built {
 		switch {
 		case region.IsConst(false):
 			return nil, ArchNo
@@ -342,7 +354,6 @@ func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, A
 		}
 		return region, ArchYes
 	}
-	e, st := b.Kbuild.Lookup(path)
 	switch st {
 	case kbuild.Built:
 		return kcond.And(e, region), ArchYes

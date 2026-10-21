@@ -35,20 +35,22 @@ type FileCond struct {
 	Region *kcond.Expr
 }
 
-// Combine is the condition of a change given its files. Sources count
-// with their Kbuild condition ANDed with their region; a source that is
-// not built contributes false, and one whose condition is unknown sets
-// unknown. Headers have no Kbuild condition and count only when no source
-// changed, through their region when it names a Kconfig symbol or is never
-// compiled. cond is nil when no file has a known condition.
+// Combine is the condition of a change given its files. Sources, and
+// headers built where the files including them are, count with their
+// Kbuild condition ANDed with their region; a source that is not built
+// contributes false, and one whose condition is unknown sets unknown. The
+// other headers have no Kbuild condition and count only when no source
+// changed, a built header being no source, through their region when it
+// names a Kconfig symbol or is never compiled. cond is nil when no file has
+// a known condition.
 func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
 	var terms []*kcond.Expr
 	sources := false
 	for _, f := range files {
-		if f.Header {
+		if f.Header && f.Status != StatusBuilt {
 			continue
 		}
-		sources = true
+		sources = sources || !f.Header
 		switch f.Status {
 		case StatusBuilt:
 			terms = append(terms, kcond.And(f.Kbuild, f.Region))
@@ -61,6 +63,7 @@ func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
 	if !sources {
 		for _, f := range files {
 			switch {
+			case f.Status == StatusBuilt: // counted above
 			case f.Status == StatusNotBuilt || f.Region.IsConst(false):
 				terms = append(terms, kcond.Const(false))
 			case len(f.Region.Symbols()) > 0:

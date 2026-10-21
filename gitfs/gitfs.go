@@ -226,7 +226,13 @@ func (t *Tree) Close() error { return t.cat.Close() }
 // one of strs. git grep reads the files in parallel, far faster than
 // reading each through ReadFile.
 func (t *Tree) Grep(strs []string, globs ...string) ([]string, error) {
-	return grep(t.ctx, t.dir, t.rev, strs, globs)
+	return grep(t.ctx, t.dir, t.rev, false, strs, globs)
+}
+
+// GrepLines returns, by file, the lines of the text files matching one of
+// globs that contain one of strs.
+func (t *Tree) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
+	return grepLines(t.ctx, t.dir, t.rev, strs, globs)
 }
 
 func (t *Tree) pathErr(op, name string, err error) error {
@@ -378,14 +384,28 @@ type workTree struct {
 // Grep lists, sorted, the text files of the working tree matching one of
 // globs that contain one of strs.
 func (w *workTree) Grep(strs []string, globs ...string) ([]string, error) {
-	return grep(w.ctx, w.dir, "", strs, globs)
+	return grep(w.ctx, w.dir, "", false, strs, globs)
+}
+
+// GrepLines returns, by file, the lines of the text files of the working
+// tree matching one of globs that contain one of strs.
+func (w *workTree) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
+	return grepLines(w.ctx, w.dir, "", strs, globs)
 }
 
 // grep lists, sorted, the text files matching one of globs that contain
 // one of strs: at rev, or in the working tree with its untracked files
-// when rev is "".
-func grep(ctx context.Context, dir, rev string, strs, globs []string) ([]string, error) {
-	args := []string{"grep", "--no-color", "-l", "-z", "-I", "-F"}
+// when rev is "". With lines, it lists the matching lines instead, in no
+// order, each after its file and a NUL.
+func grep(ctx context.Context, dir, rev string, lines bool, strs, globs []string) ([]string, error) {
+	args := []string{"grep", "--no-color", "-z", "-I", "-F"}
+	sep := []byte{0}
+	if lines {
+		// The user's grep.lineNumber and grep.column would add fields.
+		args, sep = append(args, "--no-line-number", "--no-column"), []byte{'\n'}
+	} else {
+		args = append(args, "-l")
+	}
 	if rev == "" {
 		args = append(args, "--untracked")
 	}
@@ -404,17 +424,34 @@ func grep(ctx context.Context, dir, rev string, strs, globs []string) ([]string,
 		return nil, err
 	}
 	var paths []string
-	for rec := range bytes.SplitSeq(out, []byte{0}) {
+	prefix := rev + ":"
+	for rec := range bytes.SplitSeq(out, sep) {
 		p, ok := string(rec), true
 		if rev != "" {
-			p, ok = strings.CutPrefix(p, rev+":")
+			p, ok = strings.CutPrefix(p, prefix)
 		}
 		if ok && p != "" {
 			paths = append(paths, p)
 		}
 	}
-	slices.Sort(paths)
+	if !lines {
+		slices.Sort(paths)
+	}
 	return paths, nil
+}
+
+func grepLines(ctx context.Context, dir, rev string, strs, globs []string) (map[string][]string, error) {
+	recs, err := grep(ctx, dir, rev, true, strs, globs)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, rec := range recs {
+		if p, line, ok := strings.Cut(rec, "\x00"); ok {
+			out[p] = append(out[p], line)
+		}
+	}
+	return out, nil
 }
 
 // RevList lists the commits of a revision range such as v6.12.1..v6.12.2
