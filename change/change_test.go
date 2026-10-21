@@ -200,7 +200,13 @@ func TestOutsideBuild(t *testing.T) {
 		"LICENSES/preferred/GPL-2.0":           true,
 		"tools/testing/selftests/net/Makefile": true,
 		"tools/perf/builtin-top.c":             true,
+		"MAINTAINERS":                          true,
+		"CREDITS":                              true,
+		".mailmap":                             true,
+		".gitignore":                           true,
 		"Documentation/Kconfig":                false, // the top Kconfig sources it
+		"Kbuild":                               false,
+		"lib/.gitignore":                       false,
 		"tools/objtool/check.c":                false, // the build runs objtool
 		"tools/include/linux/types.h":          false,
 		"scripts/mod/modpost.c":                false,

@@ -52,12 +52,21 @@ func Kernel(p string) (ok, header bool) {
 }
 
 // OutsideBuild reports whether building the kernel never reads p:
-// documentation, licenses, selftests and perf. Other tools are left in, as
-// the build runs some (objtool, resolve_btfids, bootconfig), and so is any
-// Kconfig file, as the top one sources Documentation/Kconfig.
+// documentation, licenses, selftests, perf, and the top-level files that
+// describe the tree (MAINTAINERS, CREDITS, COPYING, README and the
+// dotfiles). Other tools are left in, as the build runs some (objtool,
+// resolve_btfids, bootconfig), and so is any Kconfig file, as the top one
+// sources Documentation/Kconfig.
 func OutsideBuild(p string) bool {
 	if strings.HasPrefix(path.Base(p), "Kconfig") {
 		return false
+	}
+	if !strings.Contains(p, "/") {
+		switch p {
+		case "MAINTAINERS", "CREDITS", "COPYING", "README":
+			return true
+		}
+		return strings.HasPrefix(p, ".")
 	}
 	for _, pre := range []string{"Documentation/", "LICENSES/", "tools/testing/", "tools/perf/"} {
 		if strings.HasPrefix(p, pre) {
