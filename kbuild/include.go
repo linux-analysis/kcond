@@ -163,7 +163,7 @@ func rustModules(src string) []rustMod {
 			mod := rustMod{name: m[1], cond: kcond.Const(true)}
 			for _, a := range attrs {
 				if p, ok := strings.CutPrefix(a, "cfg("); ok && strings.HasSuffix(p, ")") {
-					mod.cond = kcond.And(mod.cond, rustCfg(p[:len(p)-1]))
+					mod.cond = kcond.And(mod.cond, kcond.RustCfg(p[:len(p)-1]))
 				} else if v, ok := strings.CutPrefix(a, "path"); ok {
 					v = strings.TrimSpace(v)
 					if v, ok = strings.CutPrefix(v, "="); ok {
@@ -201,73 +201,6 @@ func attribute(s string) (attr, rest string, ok bool) {
 		}
 	}
 	return "", s, false
-}
-
-// rustCfg converts the predicate of a cfg attribute. CONFIG_X holds when X
-// is y or m, CONFIG_X = "y" and = "m" for one of them, as Kconfig's
-// rustc_cfg defines them, and MODULE when the code is built as a module,
-// as for C; not, all and any combine them. Anything else is an opaque
-// atom.
-func rustCfg(p string) *kcond.Expr {
-	p = strings.TrimSpace(p)
-	if name, args, ok := strings.Cut(p, "("); ok && strings.HasSuffix(args, ")") {
-		var es []*kcond.Expr
-		for _, a := range cfgArgs(args[:len(args)-1]) {
-			if strings.TrimSpace(a) != "" { // a trailing comma
-				es = append(es, rustCfg(a))
-			}
-		}
-		switch strings.TrimSpace(name) {
-		case "not":
-			if len(es) == 1 {
-				return kcond.Not(es[0])
-			}
-		case "all":
-			return kcond.And(es...)
-		case "any":
-			return kcond.Or(es...)
-		}
-	} else if name, val, ok := strings.Cut(p, "="); kcond.IsSymbol(strings.TrimSpace(name)) {
-		name = strings.TrimSpace(name)
-		switch strings.TrimSpace(val) {
-		case `"y"`:
-			return kcond.Var(name, kcond.Builtin)
-		case `"m"`:
-			return kcond.Var(name, kcond.Module)
-		}
-		if !ok {
-			return kcond.Var(name, kcond.Enabled)
-		}
-	} else if p == "MODULE" {
-		return kcond.Var("defined(MODULE)", kcond.Enabled)
-	}
-	return kcond.Var("cfg("+strings.Join(strings.Fields(p), " ")+")", kcond.Enabled)
-}
-
-// cfgArgs splits the arguments of a cfg predicate at the commas outside
-// parentheses and strings.
-func cfgArgs(s string) []string {
-	var args []string
-	depth, quoted, start := 0, false, 0
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case quoted:
-			if c == '\\' {
-				i++
-			} else if c == '"' {
-				quoted = false
-			}
-		case c == '"':
-			quoted = true
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		case c == ',' && depth == 0:
-			args, start = append(args, s[start:i]), i+1
-		}
-	}
-	return append(args, s[start:])
 }
 
 // resolveModule finds the file of module declaration m in the Rust file p:

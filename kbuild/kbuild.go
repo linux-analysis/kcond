@@ -233,6 +233,8 @@ func CodeOf(p string) kcond.Code {
 		c.Assembly = kcond.True
 	case ".h":
 		c.Assembly = kcond.Unknown
+	case ".rs":
+		c.Rust = true
 	}
 	return c
 }
