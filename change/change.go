@@ -6,6 +6,7 @@ package change
 import (
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/linux-analysis/kcond"
@@ -80,7 +81,8 @@ func OutsideBuild(p string) bool {
 
 // Changes lists the kernel files the commit hash changes, given its
 // diff, with the condition of the changed lines. Images are read from b as
-// hash^:path and hash:path.
+// hash^:path and hash:path, and as hash^2:path and on for the further
+// parents of a merge's combined diff.
 func Changes(b Blobs, hash, diff string) []FileChange {
 	var out []FileChange
 	for _, fd := range unidiff.Files(diff) {
@@ -92,12 +94,12 @@ func Changes(b Blobs, hash, diff string) []FileChange {
 		if !ok || len(fd.Hunks) == 0 {
 			continue
 		}
-		var del, add int
+		var add int
 		for _, h := range fd.Hunks {
-			del += len(h.Deleted)
 			add += len(h.Added)
 		}
-		var oldSrc, newSrc *kcond.Source
+		olds := map[int]*kcond.Source{} // by parent
+		var newSrc *kcond.Source
 		var bad bool
 		image := func(rev, file string) *kcond.Source {
 			data, found, err := b.Get(rev + ":" + file)
@@ -112,8 +114,14 @@ func Changes(b Blobs, hash, diff string) []FileChange {
 			}
 			return src
 		}
-		if del > 0 && fd.OldPath != "" {
-			oldSrc = image(hash+"^", fd.OldPath)
+		for _, h := range fd.Hunks {
+			if _, read := olds[h.Parent]; !read && len(h.Deleted) > 0 && fd.OldPath != "" {
+				rev := hash + "^"
+				if h.Parent > 0 {
+					rev += strconv.Itoa(h.Parent + 1)
+				}
+				olds[h.Parent] = image(rev, fd.OldPath)
+			}
 		}
 		if add > 0 && fd.NewPath != "" {
 			newSrc = image(hash, fd.NewPath)
@@ -154,6 +162,7 @@ func Changes(b Blobs, hash, diff string) []FileChange {
 		for _, h := range fd.Hunks {
 			// A hunk whose code reads the same before and after only moves
 			// comments or blank lines.
+			oldSrc := olds[h.Parent]
 			if slices.Equal(code(oldSrc, h.OldStart, h.OldLines), code(newSrc, h.NewStart, h.NewLines)) {
 				continue
 			}

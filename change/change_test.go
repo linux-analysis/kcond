@@ -128,6 +128,22 @@ func TestChanges(t *testing.T) {
 	}
 }
 
+// A merge's combined diff reads each parent's lines in that parent: the
+// second parent's line the merge drops is read in h^2, and h^, which
+// loses no line, is not read.
+func TestChangesMerge(t *testing.T) {
+	b := blobs{
+		"h^2:m.c": "#ifdef CONFIG_X\nint x;\nint x2;\n#endif\n#ifdef CONFIG_Y\n#endif\n",
+		"h:m.c":   "#ifdef CONFIG_X\nint x;\n#endif\n#ifdef CONFIG_Y\nint y;\n#endif\n",
+	}
+	d := "diff --cc m.c\n--- a/m.c\n+++ b/m.c\n@@@ -1,5 -1,6 +1,6 @@@\n" +
+		"  #ifdef CONFIG_X\n  int x;\n -int x2;\n  #endif\n  #ifdef CONFIG_Y\n++int y;\n  #endif\n"
+	got := Changes(b, "h", d)
+	if len(got) != 1 || !got[0].Code || got[0].Region.String() != "CONFIG_X=y || CONFIG_Y=y" {
+		t.Errorf("Changes = %+v, want m.c in CONFIG_X=y || CONFIG_Y=y", got)
+	}
+}
+
 // Arch macros follow the Kconfig symbols in a source only the kernel
 // compiles; in a header, which the 32-bit vDSO of an x86-64 kernel also
 // includes, the line may be compiled as i386 code there.

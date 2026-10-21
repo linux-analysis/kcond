@@ -72,7 +72,7 @@ func newFixture(t *testing.T) *fixture {
 
 func TestDiff(t *testing.T) {
 	f := newFixture(t)
-	diff, err := Diff(ctx, f.dir, f.c2)
+	diff, err := Diff(ctx, f.dir, f.c2, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +80,12 @@ func TestDiff(t *testing.T) {
 	if !strings.Contains(diff, "+int c;") || strings.Contains(diff, "+  int b;") || strings.Contains(diff, "net: fix leak") {
 		t.Errorf("Diff = %q; want the added line only, without the message", diff)
 	}
-	if _, err := Diff(ctx, f.dir, "no-such-rev"); err == nil {
+	if _, err := Diff(ctx, f.dir, "no-such-rev", false); err == nil {
 		t.Error("Diff(no-such-rev) succeeded")
 	}
 	// A revision is never an option: git show would write this file.
 	out := filepath.Join(t.TempDir(), "out")
-	if _, err := Diff(ctx, f.dir, "--output="+out); err == nil {
+	if _, err := Diff(ctx, f.dir, "--output="+out, false); err == nil {
 		t.Error("Diff(--output=...) succeeded")
 	}
 	if _, err := os.Stat(out); err == nil {
@@ -98,7 +98,7 @@ func TestDiffUserConfig(t *testing.T) {
 	// The user's color and prefix settings change nothing.
 	git(t, f.dir, "config", "color.diff", "always")
 	git(t, f.dir, "config", "diff.noprefix", "true")
-	diff, err := Diff(ctx, f.dir, f.c2)
+	diff, err := Diff(ctx, f.dir, f.c2, false)
 	if err != nil || strings.Contains(diff, "\x1b") || !strings.Contains(diff, "diff --git a/a.c b/a.c\n") {
 		t.Errorf("Diff = %q, %v; want a plain diff with a/ and b/", diff, err)
 	}
@@ -109,9 +109,13 @@ func TestDiffUserConfig(t *testing.T) {
 	git(t, f.dir, "commit", "-q", "-m", "side")
 	git(t, f.dir, "checkout", "-q", "master")
 	git(t, f.dir, "merge", "-q", "--no-ff", "-m", "merge", "side")
-	diff, err = Diff(ctx, f.dir, "HEAD")
+	diff, err = Diff(ctx, f.dir, "HEAD", false)
 	if err != nil || !strings.Contains(diff, "+++ b/side.c\n") || strings.Contains(diff, "a.c") {
 		t.Errorf("Diff of a merge = %q, %v; want side.c only", diff, err)
+	}
+	// Combined, a clean merge has no change of its own.
+	if diff, err := Diff(ctx, f.dir, "HEAD", true); err != nil || diff != "" {
+		t.Errorf("combined Diff of a clean merge = %q, %v; want none", diff, err)
 	}
 }
 
@@ -265,8 +269,9 @@ func TestRevList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Oldest first and the merge left out; two follows one on their line.
-	sorted, want := slices.Clone(got), []string{one, two, side}
+	// Oldest first, the merge too; two follows one on their line.
+	merge := git(t, f.dir, "rev-parse", "HEAD")
+	sorted, want := slices.Clone(got), []string{one, two, side, merge}
 	slices.Sort(sorted)
 	slices.Sort(want)
 	if !slices.Equal(sorted, want) || slices.Index(got, one) > slices.Index(got, two) {

@@ -60,7 +60,8 @@ commits:
   diff HASH|A..B...           the files a commit changes, the condition of
                               its changed lines, its arch label and, with
                               --config, the verdict; a range lists its
-                              commits oldest first, merges left out, with
+                              commits oldest first, a merge with only the
+                              hunks that differ from every parent, with
                               the Makefiles read at its end; --build or
                               --config reads that build only, without the
                               arch label
@@ -525,23 +526,27 @@ type commitResult struct {
 }
 
 // commit is a commit diff reads, with the revisions its Makefiles are
-// read at, in order.
+// read at, in order. combined reads a merge as its own change rather than
+// its change to its first parent.
 type commit struct {
-	hash string
-	revs []string
+	hash     string
+	revs     []string
+	combined bool
 }
 
 // commitsOf lists the commits the arguments name: hashes, and the commits
 // of each A..B range. A hash reads its Makefiles at itself, then at its
 // parent for the files it deletes; a range's commits read them at the
 // range's end first, the tree a config that is checked against them was
-// built from, so that the whole range takes one crawl.
+// built from, so that the whole range takes one crawl. A range reads each
+// merge as its own change: the rest of what the merge brings is the
+// range's other commits.
 func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit, error) {
 	var commits []commit
 	for _, a := range args {
 		_, end, ok := strings.Cut(a, "..")
 		if !ok {
-			commits = append(commits, commit{a, []string{a, a + "^"}})
+			commits = append(commits, commit{a, []string{a, a + "^"}, false})
 			continue
 		}
 		// A...B ends at B too, and A.. at HEAD.
@@ -556,7 +561,7 @@ func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit
 			fmt.Fprintf(o.stderr, "kcond: %s has no commits\n", a)
 		}
 		for _, h := range hashes {
-			commits = append(commits, commit{h, []string{end, h, h + "^"}})
+			commits = append(commits, commit{h, []string{end, h, h + "^"}, true})
 		}
 	}
 	return commits, nil
@@ -592,7 +597,7 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 	unread := make([]bool, len(commits)) // the commit changes nothing the build reads
 	var files []*crawl.File
 	for i, c := range commits {
-		d, err := gitfs.Diff(ctx, dir, c.hash)
+		d, err := gitfs.Diff(ctx, dir, c.hash, c.combined)
 		if err != nil {
 			return err
 		}

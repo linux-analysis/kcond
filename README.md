@@ -68,11 +68,13 @@ one-line view:
     26cc5063e3c2a5d14f42fe623c9567bd1499fb19	applies	CONFIG_EXT4_FS
     ...
 
-A range lists its commits oldest first, merges left out, and reads the
-Makefiles at its end; the 815 commits of v6.12.1..v6.12.2 take about 10
-seconds with `--config` and 25 reading every build. A merge named alone
-reads as its diff to its first parent. A commit that changes only what
-the build never reads, documentation,
+A range lists its commits oldest first and reads the Makefiles at its
+end; the 815 commits of v6.12.1..v6.12.2 take about 10 seconds with
+`--config` and 25 reading every build. A merge in a range reads as its
+own change, the hunks that differ from every parent, as `git show`
+prints them, so a clean merge reads `none`; a merge named alone reads as
+its diff to its first parent, everything it brings. A commit that
+changes only what the build never reads, documentation,
 selftests, perf or comments, does not apply, with the label `none` and
 the condition `false`; one that changes no kernel code but Makefiles,
 Kconfig or device trees has no label and is unknown.

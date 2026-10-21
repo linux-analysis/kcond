@@ -83,13 +83,18 @@ func checkRev(rev string) error {
 
 // Diff returns the changes of the commit hash against its first parent,
 // with whitespace-only changes left out, as the change analysis reads
-// them. It runs the plumbing diff-tree, whose output the user's color and
-// prefix settings leave alone.
-func Diff(ctx context.Context, dir, hash string) (string, error) {
+// them; with combined, a merge's are its own, the hunks that differ from
+// every parent (git's --cc). It runs the plumbing diff-tree, whose output
+// the user's color and prefix settings leave alone.
+func Diff(ctx context.Context, dir, hash string, combined bool) (string, error) {
 	if err := checkRev(hash); err != nil {
 		return "", err
 	}
-	out, err := run(ctx, dir, "diff-tree", "-p", "--no-commit-id", "--root", "--diff-merges=first-parent",
+	merges := "--diff-merges=first-parent"
+	if combined {
+		merges = "--diff-merges=dense-combined"
+	}
+	out, err := run(ctx, dir, "diff-tree", "-p", "--no-commit-id", "--root", merges,
 		"--ignore-all-space", "--ignore-space-change", "--ignore-blank-lines", hash)
 	if err != nil {
 		return "", err
@@ -455,12 +460,12 @@ func grepLines(ctx context.Context, dir, rev string, strs, globs []string) (map[
 }
 
 // RevList lists the commits of a revision range such as v6.12.1..v6.12.2
-// as git rev-list does, oldest first and without merge commits.
+// as git rev-list does, oldest first, merges included.
 func RevList(ctx context.Context, dir, spec string) ([]string, error) {
 	if err := checkRev(spec); err != nil {
 		return nil, err
 	}
-	out, err := run(ctx, dir, "rev-list", "--reverse", "--no-merges", spec)
+	out, err := run(ctx, dir, "rev-list", "--reverse", spec)
 	if err != nil {
 		return nil, err
 	}
