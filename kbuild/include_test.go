@@ -2,6 +2,7 @@ package kbuild
 
 import (
 	"io/fs"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -302,19 +303,81 @@ func TestForcedIncludes(t *testing.T) {
 	expect(t, r, map[string]string{"lib/vdso/gettimeofday.c": "CONFIG_V"})
 }
 
-// A header outside include/ and arch/<arch>/include/ is built where the
-// files including it are, under the condition of each directive's line,
-// through other headers and -I directories; a file the build never
+// asmHeaders is the part of scripts/Makefile.asm-headers (v6.11) that
+// decides the wrappers, and kbuildInclude the line of scripts/Kbuild.include
+// it takes the arch's list from.
+const (
+	asmHeaders = `src := $(srctree)/$(subst /generated,,$(obj))
+include $(srctree)/scripts/Kbuild.include
+-include $(kbuild-file)
+ifneq ($(SRCARCH),um)
+include $(srctree)/$(generic)/Kbuild
+endif
+mandatory-y := $(filter-out $(generated-y), $(mandatory-y))
+generic-y   += $(foreach f, $(mandatory-y), $(if $(wildcard $(src)/$(f)),,$(f)))
+generic-y   := $(addprefix $(obj)/, $(generic-y))
+`
+	kbuildInclude = "kbuild-file = $(or $(wildcard $(src)/Kbuild),$(src)/Makefile)\n"
+)
+
+// The asm-generic wrappers are those the tree's script generates, by the
+// rules of its version: the arch's generic-y; since v5.0 also the
+// mandatory-y headers the arch has no file for, less its generated-y, read
+// through the arch's include of Kbuild.asm in v5.0 and from the generic
+// Kbuild since v5.4; before v5.0, with src passed by the caller, no
+// fallback.
+func TestWrappers(t *testing.T) {
+	base := map[string]string{
+		"Makefile":                            "# the script runs for include/generated/uapi/asm too\n",
+		"arch/x86/include/asm/Kbuild":         "generic-y += gen.h\ngenerated-y += made.h\n",
+		"arch/x86/include/asm/own.h":          "",
+		"arch/x86/include/uapi/asm/Kbuild":    "include include/uapi/asm-generic/Kbuild.asm\n",
+		"include/uapi/asm-generic/Kbuild.asm": "mandatory-y += poll.h\n",
+		"include/asm-generic/Kbuild":          "mandatory-y += man.h own.h made.h\n",
+	}
+	for _, tc := range []struct {
+		version   string
+		scripts   map[string]string
+		asm, uapi string
+	}{
+		{"v4.19", map[string]string{"scripts/Makefile.asm-generic": "kbuild-file := $(srctree)/arch/$(SRCARCH)/include/$(src)/Kbuild\n-include $(kbuild-file)\nall: $(patsubst %, $(obj)/%, $(generic-y))\n"},
+			"gen.h", ""},
+		{"v5.0", map[string]string{"scripts/Makefile.asm-generic": `src := $(subst /generated,,$(obj))
+-include $(src)/Kbuild
+mandatory-y := $(filter-out $(generated-y), $(mandatory-y))
+generic-y   += $(foreach f, $(mandatory-y), $(if $(wildcard $(srctree)/$(src)/$(f)),,$(f)))
+generic-y   := $(addprefix $(obj)/, $(generic-y))
+`}, "gen.h", "poll.h"},
+		{"v6.11", map[string]string{"scripts/Makefile.asm-headers": asmHeaders, "scripts/Kbuild.include": kbuildInclude}, "gen.h man.h", "poll.h"},
+	} {
+		files := maps.Clone(base)
+		maps.Copy(files, tc.scripts)
+		fsys := tree(files)
+		for dir, want := range map[string]string{"asm": tc.asm, "uapi/asm": tc.uapi} {
+			if got := strings.Join(slices.Sorted(maps.Keys(wrapped(fsys, "x86", dir))), " "); got != want {
+				t.Errorf("%s: wrapped(%s) = %q, want %q", tc.version, dir, got, want)
+			}
+		}
+	}
+}
+
+// A header is built where the files including it are, under the condition
+// of each directive's line, through other headers and -I directories, a
+// bracketed name through the build's include directories and the
+// asm-generic wrappers, and an -include flag's header by the object's
+// source or, for LINUXINCLUDE's, by every one; a file the build never
 // compiles or no Makefile lists adds nothing, and the header is unlisted
-// when no listed file includes it or when it is public.
+// when no listed file includes it.
 func TestHeaders(t *testing.T) {
 	files := map[string]string{
-		"Makefile":             "drivers-y := drivers/\n",
-		"drivers/Makefile":     "obj-$(CONFIG_FOO) += foo/\n",
-		"drivers/foo/Makefile": "obj-y += a.o\nobj-$(CONFIG_FOO_B) += b.o\nobj-$(CONFIG_FOO_M) += m.o\nccflags-y := -I $(src)/include\n",
-		"drivers/foo/a.c":      "#include \"foo.h\"\n#include <bar.h>\n#include \"x.h\"\n#include <linux/pub.h>\n",
-		"drivers/foo/b.c":      "#ifdef CONFIG_FOO_X\n#include \"foo.h\"\n#endif\n",
-		"drivers/foo/m.c":      "#include \"mod.h\"\n",
+		"Makefile":             "LINUXINCLUDE := -I$(srctree)/include -include $(srctree)/include/linux/kconfig.h\ndrivers-y := drivers/\n",
+		"drivers/Makefile":     "obj-$(CONFIG_FOO) += foo/\nobj-y += core.o\n",
+		"drivers/core.c":       "",
+		"drivers/foo/Makefile": "obj-y += a.o s.o\nobj-$(CONFIG_FOO_B) += b.o\nobj-$(CONFIG_FOO_M) += m.o\nccflags-y := -I $(src)/include\n",
+		"drivers/foo/a.c":      "#include \"foo.h\"\n#include <bar.h>\n#include \"x.h\"\n#include <linux/pub.h>\n#include <asm/gen.h>\n#include <asm/own.h>\n#include <asm/asmh.h>\n",
+		"drivers/foo/b.c":      "#ifdef CONFIG_FOO_X\n#include \"foo.h\"\n#include <linux/u.h>\n#endif\n",
+		"drivers/foo/m.c":      "#include \"mod.h\"\n#include <asm/man.h>\n",
+		"drivers/foo/s.S":      "#include <asm/asmh.h>\n#include <asm/sonly.h>\n",
 		// foo.h includes sub.h; x.h and y.h include each other.
 		"drivers/foo/foo.h": "#include \"sub/sub.h\"\n", "drivers/foo/sub/sub.h": "",
 		"drivers/foo/x.h": "#include \"y.h\"\n", "drivers/foo/y.h": "#include \"x.h\"\n",
@@ -324,29 +387,57 @@ func TestHeaders(t *testing.T) {
 		"drivers/foo/orphan.h": "",
 		"drivers/foo/tools.h":  "", "tools/t.c": "#include \"../drivers/foo/tools.h\"\n",
 		"drivers/foo/odd.h": "", "drivers/foo/unlisted.c": "#include \"odd.h\"\n#include \"foo.h\"\n",
-		"include/linux/pub.h": "",
+		// Public headers: pub.h includes pub2.h; gen.h is generic-y, man.h
+		// mandatory-y without an x86 header, own.h mandatory-y shadowed by
+		// x86's own; u.h is uapi; asmh.h includes conly.h for C units
+		// only; sonly.h is included by assembly only, so the conly2.h it
+		// includes for C units is never compiled; kconfig.h comes from
+		// LINUXINCLUDE.
+		"include/linux/pub.h": "#include <linux/pub2.h>\n", "include/linux/pub2.h": "",
+		"include/linux/kconfig.h":      "",
+		"arch/x86/include/asm/Kbuild":  "generic-y += gen.h\n",
+		"include/asm-generic/Kbuild":   "mandatory-y += man.h own.h\n",
+		"scripts/Makefile.asm-headers": asmHeaders, "scripts/Kbuild.include": kbuildInclude,
+		"include/asm-generic/gen.h": "", "include/asm-generic/man.h": "", "include/asm-generic/own.h": "",
+		"arch/x86/include/asm/own.h":   "",
+		"include/uapi/linux/u.h":       "",
+		"arch/x86/include/asm/asmh.h":  "#ifndef __ASSEMBLY__\n#include <linux/conly.h>\n#endif\n",
+		"include/linux/conly.h":        "",
+		"arch/x86/include/asm/sonly.h": "#ifndef __ASSEMBLY__\n#include <linux/conly2.h>\n#endif\n",
+		"include/linux/conly2.h":       "",
 	}
-	// The crawl lists the #include lines when a private header is to be
-	// looked up, and only then.
-	for _, lookups := range [][]string{{"drivers/foo/foo.h"}, {"include/linux/pub.h", "drivers/foo/a.c"}, nil} {
+	// The crawl lists the #include lines when a header is to be looked
+	// up, and only then.
+	for _, lookups := range [][]string{{"drivers/foo/foo.h"}, {"include/linux/pub.h", "drivers/foo/a.c"}, {"drivers/foo/a.c"}, nil} {
 		r, err := Crawl(tree(files), Options{Arch: "x86", Lookups: lookups})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if listed, want := r.Includes.names != nil, lookups != nil && lookups[0] == "drivers/foo/foo.h"; listed != want {
+		if listed, want := r.Includes.names != nil, lookups != nil && lookups[0] != "drivers/foo/a.c"; listed != want {
 			t.Errorf("Crawl with Lookups %q listed the #include lines: %v, want %v", lookups, listed, want)
 		}
 	}
 	r := crawl(t, files)
 	expect(t, r, map[string]string{
-		"drivers/foo/foo.h":         "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
-		"drivers/foo/sub/sub.h":     "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
-		"drivers/foo/include/bar.h": "CONFIG_FOO=y",
-		"drivers/foo/x.h":           "CONFIG_FOO=y",
-		"drivers/foo/y.h":           "CONFIG_FOO=y",
-		"drivers/foo/mod.h":         "CONFIG_FOO && (CONFIG_FOO=y || CONFIG_FOO_M=m) && CONFIG_FOO_M",
+		"drivers/foo/foo.h":            "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
+		"drivers/foo/sub/sub.h":        "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
+		"drivers/foo/include/bar.h":    "CONFIG_FOO=y",
+		"drivers/foo/x.h":              "CONFIG_FOO=y",
+		"drivers/foo/y.h":              "CONFIG_FOO=y",
+		"drivers/foo/mod.h":            "CONFIG_FOO && (CONFIG_FOO=y || CONFIG_FOO_M=m) && CONFIG_FOO_M",
+		"include/linux/pub.h":          "CONFIG_FOO=y",
+		"include/linux/pub2.h":         "CONFIG_FOO=y",
+		"include/asm-generic/gen.h":    "CONFIG_FOO=y",
+		"include/asm-generic/man.h":    "CONFIG_FOO && (CONFIG_FOO=y || CONFIG_FOO_M=m) && CONFIG_FOO_M",
+		"arch/x86/include/asm/own.h":   "CONFIG_FOO=y",
+		"include/uapi/linux/u.h":       "CONFIG_FOO && (CONFIG_FOO=y || CONFIG_FOO_B=m) && CONFIG_FOO_B && CONFIG_FOO_X=y",
+		"arch/x86/include/asm/asmh.h":  "CONFIG_FOO=y",
+		"include/linux/conly.h":        "CONFIG_FOO=y",
+		"arch/x86/include/asm/sonly.h": "CONFIG_FOO=y",
+		"include/linux/conly2.h":       "false",
+		"include/linux/kconfig.h":      "true",
 	})
-	for _, p := range []string{"drivers/foo/orphan.h", "drivers/foo/tools.h", "drivers/foo/odd.h", "include/linux/pub.h"} {
+	for _, p := range []string{"drivers/foo/orphan.h", "drivers/foo/tools.h", "drivers/foo/odd.h", "include/asm-generic/own.h"} {
 		if _, st := r.Lookup(p); st != Unlisted {
 			t.Errorf("%s: %v, want Unlisted", p, st)
 		}

@@ -71,9 +71,12 @@ var (
 
 // incLines reads the #include lines of the source data of file p, with
 // the condition of each line; unbalanced directives leave every line
-// unconditional.
+// unconditional. A header's conditions keep __ASSEMBLY__, for the lookup
+// to follow its C and assembly units apart.
 func incLines(data []byte, p string) []incLine {
-	cpp, _ := kcond.Lines(data, CodeOf(p))
+	code := CodeOf(p)
+	code.KeepAssembly = true
+	cpp, _ := kcond.Lines(data, code)
 	var ds []incLine
 	inComment := false
 	for i, line := range strings.Split(string(data), "\n") {
@@ -375,6 +378,116 @@ func isFile(fsys fs.FS, p string) bool {
 	}
 	st, err := fs.Stat(fsys, p)
 	return err == nil && !st.IsDir()
+}
+
+// includeRoots finds the file an #include <name> names in the include
+// directories of a build, in LINUXINCLUDE order: arch/<a>/include, the asm
+// wrappers generic-y and mandatory-y generate (asm/X.h reads
+// asm-generic/X.h), include, arch/<a>/include/uapi, the uapi wrappers,
+// include/uapi; and include/asm-<a>, where trees before v2.6.24 kept them.
+type includeRoots struct {
+	fsys fs.FS
+	arch string
+	// generic and uapiGeneric are the X.h the kernel's and the uapi
+	// wrappers stand in for.
+	generic, uapiGeneric map[string]bool
+	// found holds what find returned for each name, "" for none; the
+	// lookups of a Result run under its mu, so it needs no lock.
+	found map[string]string
+}
+
+func newIncludeRoots(fsys fs.FS, arch string) *includeRoots {
+	return &includeRoots{fsys, arch, wrapped(fsys, arch, "asm"), wrapped(fsys, arch, "uapi/asm"), map[string]string{}}
+}
+
+// wrapped returns the headers X.h of arch/<arch>/include/<dir>, dir asm or
+// uapi/asm, for which the tree's wrapper script generates a header that
+// includes <asm-generic/X.h>. The script, scripts/Makefile.asm-headers or
+// before v6.11 Makefile.asm-generic, is evaluated with the variables the
+// top Makefile passes it, so that each version's rules hold: the arch's
+// generic-y and, since v5.0, the mandatory-y headers the arch has no file
+// for, other than its generated-y. A tree without the script, or that does
+// not run it for uapi/asm (before v3.7), has none.
+func wrapped(fsys fs.FS, arch, dir string) map[string]bool {
+	out := map[string]bool{}
+	obj := "arch/" + arch + "/include/generated/" + dir
+	generic := "include/asm-generic"
+	if dir == "uapi/asm" {
+		generic = "include/uapi/asm-generic"
+		if top, err := fs.ReadFile(fsys, "Makefile"); err != nil || !bytes.Contains(top, []byte("include/generated/uapi/asm")) {
+			return out
+		}
+	}
+	script := "scripts/Makefile.asm-headers"
+	if !isFile(fsys, script) {
+		if script = "scripts/Makefile.asm-generic"; !isFile(fsys, script) {
+			return out
+		}
+	}
+	run := func(pre map[string]string) *evaluator {
+		ev := newEvaluator(fsys, "", pre)
+		ev.run(script)
+		ev.frozen = true
+		return ev
+	}
+	// A variable passed overrides the script's own assignment, as in make,
+	// and since v5.0 the script sets src itself: before, the caller passes it.
+	pre := map[string]string{"srctree": ".", "SRCARCH": arch, "obj": obj, "generic": generic}
+	ev := run(pre)
+	if ev.vars["src"] == nil {
+		pre["src"] = dir
+		ev = run(pre)
+	}
+	for _, w := range ev.value("generic-y") {
+		if !w.opaque && !w.cond.IsConst(false) {
+			out[strings.TrimPrefix(w.text, obj+"/")] = true // v5.0 on prefix $(obj)/
+		}
+	}
+	return out
+}
+
+// find returns the file name resolves to.
+func (ir *includeRoots) find(name string) (string, bool) {
+	f, ok := ir.found[name]
+	if !ok {
+		f = ir.search(name)
+		ir.found[name] = f
+	}
+	return f, f != ""
+}
+
+// search is find without the memo.
+func (ir *includeRoots) search(name string) string {
+	rest, asm := strings.CutPrefix(name, "asm/")
+	a := "arch/" + ir.arch + "/include/"
+	cands := []string{a + name}
+	// A wrapper reads <asm-generic/X.h>, which the roots find under
+	// include before include/uapi.
+	wrapper := func(x string) {
+		cands = append(cands, "include/asm-generic/"+x, "include/uapi/asm-generic/"+x)
+	}
+	// The kernel's asm/X.h reads its uapi header as <uapi/asm/X.h>: the
+	// generated wrapper when the arch has none.
+	if urest, ok := strings.CutPrefix(name, "uapi/asm/"); ok && ir.uapiGeneric[urest] {
+		wrapper(urest)
+	}
+	if asm && ir.generic[rest] {
+		wrapper(rest)
+	}
+	cands = append(cands, "include/"+name, a+"uapi/"+name)
+	if asm && ir.uapiGeneric[rest] {
+		wrapper(rest)
+	}
+	cands = append(cands, "include/uapi/"+name)
+	if asm {
+		cands = append(cands, "include/asm-"+ir.arch+"/"+rest)
+	}
+	for _, c := range cands {
+		if c = path.Clean(c); isFile(ir.fsys, c) {
+			return c
+		}
+	}
+	return ""
 }
 
 // resolveInclude finds the file that #include "name" in dir names.

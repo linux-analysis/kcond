@@ -644,4 +644,17 @@ func TestCondHeader(t *testing.T) {
 	if want := hash + "\tCONFIG_A\n  lib/a.h\tbuilt\tCONFIG_A\tregion true\n"; code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
+	// A public header too, through <...> and the guard of the header that
+	// includes it.
+	commitFile(t, dir, "lib/a.c", "#include \"a.h\"\n#include <linux/x.h>\nint a = 1;\n")
+	hash = commitFile(t, dir, "include/linux/x.h", "#ifndef X_H\n#define X_H\n#include <linux/y.h>\n#endif\n")
+	commitFile(t, dir, "include/linux/y.h", "int y;\n")
+	out, code = capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "include/linux/x.h", "include/linux/y.h")
+	if want := "include/linux/x.h\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\ninclude/linux/y.h\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n"; code != 0 || out != want {
+		t.Errorf("cond = %q, %d; want %q", out, code, want)
+	}
+	out, code = capture(t, "--tree", dir, "--build", "x86_64", "diff", hash)
+	if want := hash + "\tCONFIG_A\n  include/linux/x.h\tbuilt\tCONFIG_A\tregion true\n"; code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
 }
