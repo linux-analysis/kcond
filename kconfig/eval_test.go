@@ -413,6 +413,21 @@ config LOOP_A
 config LOOP_B
 	bool "b"
 	depends on LOOP_A
+
+config SEL
+	bool "selects"
+	depends on NET
+	select INET
+	select PCI if MODULES
+	select CRYPTO if NET
+
+config TWICE
+	bool "twice"
+
+config TWICE
+	bool
+	depends on NET
+	select INET
 `}, nil)
 	for name, want := range map[string]string{
 		"MPTCP":        "CONFIG_INET CONFIG_NET",
@@ -431,6 +446,20 @@ config LOOP_B
 	} {
 		if got := strings.Join(v.Requires(name), " "); got != want {
 			t.Errorf("Requires(%s) = %q, want %q", name, got, want)
+		}
+	}
+	// DependsOn stops at the direct dependencies.
+	for name, want := range map[string]string{"MPTCP": "CONFIG_INET", "INET": "CONFIG_NET", "NET": ""} {
+		if got := strings.Join(v.DependsOn(name), " "); got != want {
+			t.Errorf("DependsOn(%s) = %q, want %q", name, got, want)
+		}
+	}
+	// A select under the symbol's own dependencies counts, one under
+	// another condition does not, nor one under the dependencies of one
+	// of its definitions.
+	for name, want := range map[string]string{"MPTCP": "CONFIG_CRYPTO", "CONFIG_MPTCP": "CONFIG_CRYPTO", "NET": "", "SEL": "CONFIG_CRYPTO CONFIG_INET", "TWICE": ""} {
+		if got := strings.Join(v.Selects(name), " "); got != want {
+			t.Errorf("Selects(%s) = %q, want %q", name, got, want)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package builds
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/linux-analysis/kcond"
@@ -85,7 +86,10 @@ func (b Build) Plain(e *kcond.Expr) *kcond.Expr {
 	if b.Values == nil || e == nil {
 		return e
 	}
-	return kcond.Rewrite(e, func(v *kcond.Expr) *kcond.Expr {
+	// The gates are read before the rewrite, which drops the =m tests
+	// of symbols this build cannot make modules, and after it, which
+	// uncovers some.
+	return b.gates(kcond.Rewrite(b.gates(e), func(v *kcond.Expr) *kcond.Expr {
 		if kcond.IsSymbol(v.Name) && !b.Values.Defined(v.Name) && b.Defined[v.Name] {
 			return kcond.Const(false)
 		}
@@ -99,7 +103,80 @@ func (b Build) Plain(e *kcond.Expr) *kcond.Expr {
 			return kcond.Const(false)
 		}
 		return kcond.Var(v.Name, kcond.Enabled)
-	})
+	}))
+}
+
+// gates drops from an AND the alternative X=y || Y=m that a term on Y of
+// the AND settles: Kconfig lets a tristate Y be y only when the options it
+// depends on are y, so Y=y makes the X y, and Y=m holds the alternative. A
+// Kbuild condition carries such a gate for an object listed by
+// obj-$(CONFIG_Y) in a directory entered through obj-$(CONFIG_X), which
+// links its built-in objects only with X=y.
+func (b Build) gates(e *kcond.Expr) *kcond.Expr {
+	if e == nil || e.Op == kcond.OpVar || e.Op == kcond.OpConst {
+		return e
+	}
+	names := map[string]bool{}
+	if e.Op == kcond.OpAnd {
+		for _, a := range e.Args {
+			if a.Op == kcond.OpVar {
+				names[a.Name] = true
+			}
+		}
+	}
+	args := make([]*kcond.Expr, 0, len(e.Args))
+	for _, a := range e.Args {
+		if !(a.Op == kcond.OpOr && b.gateSettled(a, names)) {
+			args = append(args, b.gates(a))
+		}
+	}
+	switch e.Op {
+	case kcond.OpAnd:
+		return kcond.And(args...)
+	case kcond.OpOr:
+		return kcond.Or(args...)
+	}
+	return kcond.Not(args[0])
+}
+
+// gateSettled tells whether or has a member Y=m, Y a tristate among names,
+// whose other members hold once Y is y, with the options that are y then:
+// what a y option selects, what a tristate at y depends on, and the bools
+// a bool at y requires, since a bool is y wherever it is on but may be y
+// on a tristate dependency at m. They are checked by evaluation, which
+// proves them only when they have no negation.
+func (b Build) gateSettled(or *kcond.Expr, names map[string]bool) bool {
+	for i, m := range or.Args {
+		if m.Op != kcond.OpVar || m.State != kcond.Module || !names[m.Name] || !b.Values.Tristate(m.Name) {
+			continue
+		}
+		cfg := kcond.Config{}
+		for todo := []string{m.Name}; len(todo) > 0; todo = todo[1:] {
+			if n := todo[0]; cfg[n] == 0 {
+				cfg[n] = 'y'
+				if b.Values.Tristate(n) {
+					todo = append(todo, b.Values.DependsOn(n)...)
+				} else {
+					for _, r := range b.Values.Requires(n) {
+						if !b.Values.Tristate(r) {
+							todo = append(todo, r)
+						}
+					}
+				}
+				todo = append(todo, b.Values.Selects(n)...)
+			}
+		}
+		rest := kcond.Or(slices.Delete(slices.Clone(or.Args), i, i+1)...)
+		if !negated(rest) && rest.Eval(cfg) == kcond.True {
+			return true
+		}
+	}
+	return false
+}
+
+// negated reports whether e has a negation.
+func negated(e *kcond.Expr) bool {
+	return e.Op == kcond.OpNot || slices.ContainsFunc(e.Args, negated)
 }
 
 // pageSize replaces the page size comparisons of region with what b's
