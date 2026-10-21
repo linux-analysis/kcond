@@ -721,6 +721,37 @@ func TestOwnLists(t *testing.T) {
 	}
 }
 
+// arm64's nVHE hypervisor lists its sources, some from the directories
+// above, in hyp-obj-y and links them into kvm_nvhe.o under the directory's
+// condition.
+func TestNVHEList(t *testing.T) {
+	files := map[string]string{
+		"Makefile":                             "include $(srctree)/arch/$(SRCARCH)/Makefile\n",
+		"arch/arm64/Makefile":                  "core-y += arch/arm64/kvm/\n",
+		"arch/arm64/kvm/Makefile":              "obj-$(CONFIG_KVM) += hyp/\n",
+		"arch/arm64/kvm/hyp/Makefile":          "obj-$(CONFIG_KVM) += vhe/ nvhe/ pgtable.o\n",
+		"arch/arm64/kvm/hyp/vhe/Makefile":      "obj-y := switch.o ../vgic.o\n",
+		"arch/arm64/kvm/hyp/nvhe/Makefile":     "lib-objs := clear_page.o\nlib-objs := $(addprefix ../../../lib/, $(lib-objs))\nhyp-obj-y := hyp-init.o ../vgic.o\nhyp-obj-$(CONFIG_LIST_HARDENED) += list_debug.o\nhyp-obj-y += $(lib-objs)\nhyp-obj := $(patsubst %.o,%.nvhe.o,$(hyp-obj-y))\nobj-y := kvm_nvhe.o\ntargets += $(hyp-obj)\n",
+		"arch/arm64/kvm/hyp/nvhe/hyp-init.S":   "",
+		"arch/arm64/kvm/hyp/nvhe/list_debug.c": "",
+		"arch/arm64/kvm/hyp/vhe/switch.c":      "",
+		"arch/arm64/kvm/hyp/vgic.c":            "",
+		"arch/arm64/kvm/hyp/pgtable.c":         "",
+		"arch/arm64/lib/clear_page.S":          "",
+	}
+	r, err := Crawl(tree(files), Options{Arch: "arm64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, r, map[string]string{
+		"arch/arm64/kvm/hyp/nvhe/hyp-init.S":   "CONFIG_KVM",
+		"arch/arm64/kvm/hyp/nvhe/list_debug.c": "CONFIG_KVM && CONFIG_LIST_HARDENED=y",
+		"arch/arm64/kvm/hyp/vhe/switch.c":      "CONFIG_KVM",
+		"arch/arm64/kvm/hyp/vgic.c":            "CONFIG_KVM",
+		"arch/arm64/lib/clear_page.S":          "CONFIG_KVM",
+	})
+}
+
 // The x86 vDSO links its objects into images, which obj-y lists: vobjs-y
 // is built when the 64-bit or x32 image is, vobjs32-y with the 32-bit one,
 // and before v3.16 the images were vdso.o and vdsox32.o. Without its images
