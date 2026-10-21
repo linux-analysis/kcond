@@ -69,8 +69,8 @@ one-line view:
     ...
 
 A range lists its commits oldest first and reads the Makefiles at its
-end; the 815 commits of v6.12.1..v6.12.2 take about 10 seconds with
-`--config` and 25 reading every build. A merge in a range reads as its
+end; the 815 commits of v6.12.1..v6.12.2 take about 8 seconds with
+`--config` and 22 reading every build. A merge in a range reads as its
 own change, the hunks that differ from every parent, as `git show`
 prints them, so a clean merge reads `none`; a merge named alone reads as
 its diff to its first parent, everything it brings. A commit that

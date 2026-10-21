@@ -1,7 +1,7 @@
 // Package gitfs reads the files of a git revision: a Tree is the file
 // tree of one revision as an fs.FS with a Grep, a CatFile reads blobs by
-// object name, and Diff returns the changes of one commit. It drives the
-// git command line and depends on the standard library only.
+// object name, and Diff and Diffs return the changes of commits. It
+// drives the git command line and depends on the standard library only.
 package gitfs
 
 import (
@@ -81,25 +81,83 @@ func checkRev(rev string) error {
 	return nil
 }
 
+// diffFlags are the diff-tree flags of Diff and Diffs: patches, the root
+// commit against the empty tree, and whitespace-only changes left out, as
+// the change analysis reads them.
+var diffFlags = []string{"-p", "--root", "--ignore-all-space", "--ignore-space-change", "--ignore-blank-lines"}
+
 // Diff returns the changes of the commit hash against its first parent,
-// with whitespace-only changes left out, as the change analysis reads
-// them; with combined, a merge's are its own, the hunks that differ from
-// every parent (git's --cc). It runs the plumbing diff-tree, whose output
-// the user's color and prefix settings leave alone.
-func Diff(ctx context.Context, dir, hash string, combined bool) (string, error) {
+// with whitespace-only changes left out. It runs the plumbing diff-tree,
+// whose output the user's color and prefix settings leave alone.
+func Diff(ctx context.Context, dir, hash string) (string, error) {
 	if err := checkRev(hash); err != nil {
 		return "", err
 	}
-	merges := "--diff-merges=first-parent"
-	if combined {
-		merges = "--diff-merges=dense-combined"
-	}
-	out, err := run(ctx, dir, "diff-tree", "-p", "--no-commit-id", "--root", merges,
-		"--ignore-all-space", "--ignore-space-change", "--ignore-blank-lines", hash)
+	args := append([]string{"diff-tree", "--no-commit-id", "--diff-merges=first-parent"}, diffFlags...)
+	out, err := run(ctx, dir, append(args, hash)...)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// Diffs passes f the changes of each of hashes, full commit ids as RevList
+// gives them, in order, read as Diff reads them but for a merge, whose
+// changes are its own: the hunks that differ from every parent (git's
+// --cc). One diff-tree reads them all.
+func Diffs(ctx context.Context, dir string, hashes []string, f func(i int, diff string)) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	for _, h := range hashes {
+		if strings.ContainsAny(h, "\n") {
+			return fmt.Errorf("gitfs: bad commit %q", h)
+		}
+	}
+	args := append([]string{"diff-tree", "--stdin", "--always", "--diff-merges=dense-combined"}, diffFlags...)
+	cmd := command(ctx, dir, args...)
+	cmd.Stdin = strings.NewReader(strings.Join(hashes, "\n") + "\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Each commit's id comes on a line of its own before its changes, which
+	// no line of a diff is.
+	r := bufio.NewReaderSize(out, 1<<20)
+	var diff strings.Builder
+	i := -1
+	for {
+		line, err := r.ReadString('\n')
+		if i+1 < len(hashes) && line == hashes[i+1]+"\n" {
+			if i >= 0 {
+				f(i, diff.String())
+			}
+			diff.Reset()
+			i++
+		} else {
+			diff.WriteString(line)
+		}
+		if err != nil {
+			break
+		}
+	}
+	err = cmd.Wait()
+	if err == nil && i < len(hashes)-1 {
+		err = fmt.Errorf("%d of %d commits read", i+1, len(hashes))
+	}
+	switch {
+	case ctx.Err() != nil:
+		return ctx.Err()
+	case err != nil:
+		return &Error{Args: args, Dir: dir, Stderr: strings.TrimSpace(stderr.String()), Err: err}
+	}
+	f(i, diff.String())
+	return nil
 }
 
 // CatFile reads objects through one git cat-file --batch process. It is
