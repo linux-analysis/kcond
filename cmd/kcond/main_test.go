@@ -215,8 +215,8 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	}
 }
 
-// A commit the build reads nothing of does not apply; one that changes a
-// Makefile may.
+// A commit the build reads nothing of does not apply, nor does one that
+// only adds a comment to a line; one that changes a Makefile may.
 func TestDiffOutsideBuild(t *testing.T) {
 	dir, _ := newKernel(t)
 	commit := func(name, content string) string {
@@ -233,18 +233,19 @@ func TestDiffOutsideBuild(t *testing.T) {
 	docs := commit("Documentation/a.rst", "A\n")
 	comment := commit("lib/c.c", "/* c */\nint c;\n")
 	makefile := commit("lib/Makefile", "obj-$(CONFIG_A) += a.o c.o\nobj-$(CONFIG_B) += b.o\n")
+	moved := commit("lib/a.c", "int a = 1; /* a */\n#ifdef CONFIG_B\nint ab;\n#endif\n")
 	cfg := filepath.Join(t.TempDir(), ".config")
 	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_A=y\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", docs, comment, makefile)
-	want := docs + "\tnot applicable\tfalse\n" + comment + "\tnot applicable\tfalse\n" + makefile + "\tunknown\tunknown\n"
+	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", docs, comment, makefile, moved)
+	want := docs + "\tnot applicable\tfalse\n" + comment + "\tnot applicable\tfalse\n" + makefile + "\tunknown\tunknown\n" + moved + "\tnot applicable\tfalse\n"
 	if code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
 	// Every build is read without --config: the label shows.
-	out, code = capture(t, "--tree", dir, "diff", docs, comment, makefile)
-	want = docs + "\tnone\tfalse\n" + comment + "\tnone\tfalse\n" + makefile + "\t\tunknown\n"
+	out, code = capture(t, "--tree", dir, "diff", docs, comment, makefile, moved)
+	want = docs + "\tnone\tfalse\n" + comment + "\tnone\tfalse\n" + makefile + "\t\tunknown\n" + moved + "\tnone\tfalse\n"
 	if code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}

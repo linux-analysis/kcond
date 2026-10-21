@@ -21,10 +21,14 @@ func analyzeRust(src []byte) *Source {
 		lines = lines[:len(lines)-1]
 	}
 	toks := lexRust(string(src), len(lines))
-	s := &Source{Cpp: make([]*Expr, len(lines)), Guard: make([]*Expr, len(lines)), Code: make([]bool, len(lines))}
+	s := &Source{Cpp: make([]*Expr, len(lines)), Guard: make([]*Expr, len(lines)), Text: make([]string, len(lines))}
 	for i := range lines {
 		s.Guard[i] = Const(true)
-		s.Code[i] = len(toks[i]) > 0
+		var texts []string
+		for _, t := range toks[i] {
+			texts = append(texts, t.text)
+		}
+		s.Text[i] = strings.Join(texts, " ")
 	}
 	cfgRegions(toks, s.Cpp)
 	return s

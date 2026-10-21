@@ -30,7 +30,9 @@ type FileChange struct {
 	Region *kcond.Expr
 	// Functions are the hunk headers git shows, normally the functions.
 	Functions []string
-	// Code is false when every changed line is a comment or blank.
+	// Code is false when no hunk changes code: every changed line is a
+	// comment or blank, or the hunk only moves comments and blanks around
+	// code it keeps.
 	Code bool
 }
 
@@ -134,12 +136,27 @@ func Changes(b Blobs, hash, diff string) []FileChange {
 		var terms []*kcond.Expr
 		lines := func(src *kcond.Source, nums []int) {
 			for _, n := range nums {
-				if src != nil && n >= 1 && n <= len(src.Code) && src.Code[n-1] {
+				if src != nil && n >= 1 && n <= len(src.Text) && src.Text[n-1] != "" {
 					terms = append(terms, src.Cond(n-1))
 				}
 			}
 		}
+		// code lists the code of the n lines of src from line start, the
+		// context lines of a hunk included.
+		code := func(src *kcond.Source, start, n int) (texts []string) {
+			for i := max(start, 1); src != nil && i < start+n && i <= len(src.Text); i++ {
+				if src.Text[i-1] != "" {
+					texts = append(texts, src.Text[i-1])
+				}
+			}
+			return texts
+		}
 		for _, h := range fd.Hunks {
+			// A hunk whose code reads the same before and after only moves
+			// comments or blank lines.
+			if slices.Equal(code(oldSrc, h.OldStart, h.OldLines), code(newSrc, h.NewStart, h.NewLines)) {
+				continue
+			}
 			lines(oldSrc, h.Deleted)
 			lines(newSrc, h.Added)
 		}

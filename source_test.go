@@ -1,7 +1,7 @@
 package kcond
 
 import (
-	"strings"
+	"slices"
 	"testing"
 )
 
@@ -266,7 +266,7 @@ void f(void) {
 	}
 }
 
-func TestCode(t *testing.T) {
+func TestText(t *testing.T) {
 	src := `/*
  * SPDX comment block
  */
@@ -279,16 +279,12 @@ int x; /* trailing */
 #if 0
 dead code
 #endif
+	pr_info("a  b",   'c');
 `
-	want := []bool{false, false, false, false, true, false, true, false, false, true, true, true}
+	want := []string{"", "", "", "", "#include <linux/kernel.h>", "", "int x;", "", "", "#if 0", "dead code", "#endif", `pr_info("a  b", 'c');`}
 	s := mustAnalyze(t, src)
-	if len(s.Code) != len(want) {
-		t.Fatalf("got %d lines, want %d", len(s.Code), len(want))
-	}
-	for i := range want {
-		if s.Code[i] != want[i] {
-			t.Errorf("line %d (%q): code %v, want %v", i+1, strings.Split(src, "\n")[i], s.Code[i], want[i])
-		}
+	if !slices.Equal(s.Text, want) {
+		t.Errorf("Text = %q, want %q", s.Text, want)
 	}
 }
 
