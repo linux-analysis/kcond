@@ -58,13 +58,15 @@ func newKernel(t *testing.T) string {
 }
 
 // A file is looked up at its revisions in order; a source no revision has
-// is missing, and headers get their status without a Makefile.
+// is missing, a header nothing includes keeps its status, and one a listed
+// source includes is built with it.
 func TestResolve(t *testing.T) {
 	kernel := newKernel(t)
 	commitFile(t, kernel, "Makefile", "core-y := lib/\n", "kbuild")
 	commitFile(t, kernel, "arch/x86/Kconfig", "config X86\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n", "x86")
 	commitFile(t, kernel, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-y += b.o\n", "lib")
-	c1 := commitFile(t, kernel, "lib/a.c", "int a;\n", "a")
+	commitFile(t, kernel, "lib/a.h", "int ah;\n", "a.h")
+	c1 := commitFile(t, kernel, "lib/a.c", "#include \"a.h\"\nint a;\n", "a")
 	c2 := commitFile(t, kernel, "lib/b.c", "int b;\n", "b")
 	tr := kcond.Const(true)
 	files := []*File{
@@ -73,6 +75,7 @@ func TestResolve(t *testing.T) {
 		{Path: "lib/c.c", Region: tr, Revs: []string{c1, c2}},
 		{Path: "include/x.h", Header: true, Region: tr, Revs: []string{c1}},
 		{Path: "arch/arm/x.h", Header: true, Region: tr, Revs: []string{c1}},
+		{Path: "lib/a.h", Header: true, Region: tr, Revs: []string{c1}},
 	}
 	var crawled int
 	got, err := Resolve(context.Background(), kernel, files, Options{Workers: 2, Progress: func(n int) { crawled = n }})
@@ -81,7 +84,7 @@ func TestResolve(t *testing.T) {
 	}
 	for i, want := range []struct{ rev, status, kbuild string }{
 		{c2, builds.StatusBuilt, "CONFIG_A"}, {c2, builds.StatusBuilt, "true"}, {"", builds.StatusMissing, ""},
-		{"", builds.StatusHeader, ""}, {"", builds.StatusNotBuilt, ""},
+		{"", builds.StatusHeader, ""}, {"", builds.StatusNotBuilt, ""}, {c1, builds.StatusBuilt, "CONFIG_A"},
 	} {
 		r := got[i]
 		kb := ""
@@ -132,8 +135,8 @@ func TestRevGrepError(t *testing.T) {
 }
 
 // Before v2.6.24 the x86-64 build compiled some of arch/i386, so a header
-// there counts as a header, as in the other builds, not as another
-// architecture's file.
+// there is built where the sources including it are, as in the other
+// builds, not another architecture's file.
 func TestResolveSplitX86(t *testing.T) {
 	kernel := newKernel(t)
 	commitFile(t, kernel, "Makefile", "include $(srctree)/arch/$(SRCARCH)/Makefile\n", "kbuild")
@@ -152,7 +155,7 @@ func TestResolveSplitX86(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, want := range []string{"built CONFIG_MTRR", "header"} {
+	for i, want := range []string{"built CONFIG_MTRR", "built CONFIG_MTRR"} {
 		s := got[i].Cond.Status
 		if got[i].Cond.Kbuild != nil {
 			s += " " + got[i].Cond.Kbuild.String()

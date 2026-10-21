@@ -616,3 +616,19 @@ func TestSymbolsConfig(t *testing.T) {
 		t.Errorf("symbols --json = %q, %d", out, code)
 	}
 }
+
+// A header the listed sources include is built under their condition, as
+// a file asked about and as a change.
+func TestCondHeader(t *testing.T) {
+	dir, _ := newKernel(t)
+	commitFile(t, dir, "lib/a.c", "#include \"a.h\"\nint a = 1;\n")
+	hash := commitFile(t, dir, "lib/a.h", "int ah;\n")
+	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "lib/a.h")
+	if want := "lib/a.h\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n"; code != 0 || out != want {
+		t.Errorf("cond = %q, %d; want %q", out, code, want)
+	}
+	out, code = capture(t, "--tree", dir, "--build", "x86_64", "diff", hash)
+	if want := hash + "\tCONFIG_A\n  lib/a.h\tbuilt\tCONFIG_A\tregion true\n"; code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}

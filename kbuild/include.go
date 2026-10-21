@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/linux-analysis/kcond"
 )
@@ -29,18 +31,163 @@ type Includes struct {
 	// found neither next to the including file nor above it, for the -I
 	// flags of its object to find, as a crawl knows them.
 	Unresolved []Include
+
+	// The builds of a tree share one Includes (see Options), so the
+	// #include lines of the tree, which find the includers of a header,
+	// are listed once, and each includer is read once.
+	mu sync.Mutex
+	// names lists, by base name, the #include names of the .c, .S and .h
+	// files, with the file of each; nil until a header is looked up.
+	names map[string][]incName
+	// read holds the #include lines of each file read, by path.
+	read map[string][]incLine
 }
 
-// GrepFS is a file system that lists the files containing a string faster
-// than reading each of them, as a git tree does with git grep.
+// incName is a name a file gives an #include, and whether it is quoted.
+type incName struct {
+	file, name string
+	quoted     bool
+}
+
+// incLine is an #include line: the name it gives, whether it is quoted
+// ("name") rather than bracketed (<name>), and the condition of its line.
+type incLine struct {
+	name   string
+	quoted bool
+	cond   *kcond.Expr
+}
+
+// GrepFS is a file system that lists the files containing a string, and
+// their lines with it, faster than reading each of them, as a git tree
+// does with git grep.
 type GrepFS interface {
 	fs.FS
 	// Grep lists the text files matching one of globs that contain one of
 	// strs.
 	Grep(strs []string, globs ...string) ([]string, error)
+	// GrepLines returns, by file, the lines of the text files matching one
+	// of globs that contain one of strs.
+	GrepLines(strs []string, globs ...string) (map[string][]string, error)
 }
 
-var includeLine = regexp.MustCompile(`^\s*#\s*include\s*"([^"]+\.[cS])"`)
+var includeLine = regexp.MustCompile(`^\s*#\s*include\s*(["<])([^">]+)[">]`)
+
+// incLines reads the #include lines of the source data of file p, with
+// the condition of each line; unbalanced directives leave every line
+// unconditional.
+func incLines(data []byte, p string) []incLine {
+	cpp, _ := kcond.Lines(data, CodeOf(p))
+	var ds []incLine
+	inComment := false
+	for i, line := range strings.Split(string(data), "\n") {
+		var code string
+		code, inComment = kcond.StripComments(line, inComment)
+		m := includeLine.FindStringSubmatch(code)
+		if m == nil {
+			continue
+		}
+		cond := kcond.Const(true)
+		if i < len(cpp) {
+			cond = cpp[i]
+		}
+		ds = append(ds, incLine{m[2], m[1] == `"`, cond})
+	}
+	return ds
+}
+
+// includers returns, by file, the #include lines of the .c, .S and .h
+// files of fsys with a name that may reach one of headers, each file read
+// once.
+func (inc *Includes) includers(fsys fs.FS, headers []string) (map[string][]incLine, error) {
+	inc.mu.Lock()
+	defer inc.mu.Unlock()
+	if inc.names == nil {
+		names, read, err := listIncludes(fsys)
+		if err != nil {
+			return nil, err
+		}
+		inc.names, inc.read = names, read
+	}
+	out := map[string][]incLine{}
+	for _, h := range headers {
+		for _, n := range inc.names[path.Base(h)] {
+			if _, ok := out[n.file]; ok || !reaches(n.name, h) {
+				continue
+			}
+			// A quoted name found nearer the file names another header, as
+			// targets would find; the listing is in memory, a read is not.
+			if n.quoted {
+				if t, ok := resolveInclude(fsys, path.Dir(n.file), n.name); ok && t != h {
+					continue
+				}
+			}
+			ds, ok := inc.read[n.file]
+			if !ok {
+				data, err := fs.ReadFile(fsys, n.file)
+				if err != nil {
+					return nil, err
+				}
+				ds = incLines(data, n.file)
+				inc.read[n.file] = ds
+			}
+			out[n.file] = ds
+		}
+	}
+	return out, nil
+}
+
+// reaches tells whether the #include name may resolve to header h: from
+// a directory above h, or climbing with "..".
+func reaches(name, h string) bool {
+	c := path.Clean(name)
+	return c == h || strings.HasSuffix(h, "/"+c) || strings.HasPrefix(c, "../")
+}
+
+// listIncludes lists the #include names of the .c, .S and .h files of
+// fsys, by base name: from one GrepLines, or by reading every file of a
+// tree without Grep, whose #include lines it returns too.
+func listIncludes(fsys fs.FS) (map[string][]incName, map[string][]incLine, error) {
+	names, read := map[string][]incName{}, map[string][]incLine{}
+	add := func(f, name string, quoted bool) {
+		names[path.Base(name)] = append(names[path.Base(name)], incName{f, name, quoted})
+	}
+	if g, ok := fsys.(GrepFS); ok {
+		lines, err := g.GrepLines([]string{"include"}, "*.c", "*.S", "*.h")
+		if err != nil {
+			return nil, nil, err
+		}
+		for f, ls := range lines {
+			f := strings.Clone(f) // the names outlive the listing
+			for _, l := range ls {
+				// Out of the context of its file a line may be in a comment;
+				// reading the file drops it.
+				code, _ := kcond.StripComments(l, false)
+				if m := includeLine.FindStringSubmatch(code); m != nil {
+					add(f, strings.Clone(m[2]), m[1] == `"`)
+				}
+			}
+		}
+	} else {
+		err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !slices.Contains([]string{".c", ".S", ".h"}, path.Ext(p)) {
+				return err
+			}
+			data, err := fs.ReadFile(fsys, p)
+			if err != nil {
+				return err
+			}
+			read[p] = incLines(data, p)
+			for _, l := range read[p] {
+				add(p, l.name, l.quoted)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return names, read, nil
+}
 
 // ScanIncludes finds the #include "file.c" and #include "file.S"
 // directives of the .c and .S files of fsys, and the module declarations
@@ -84,24 +231,14 @@ func ScanIncludes(fsys fs.FS) (*Includes, error) {
 		if !bytes.Contains(data, []byte(`.c"`)) && !bytes.Contains(data, []byte(`.S"`)) {
 			continue // what Grep leaves out
 		}
-		// Unbalanced directives leave every line unconditional.
-		cpp, _ := kcond.Lines(data, CodeOf(p))
-		inComment := false
-		for i, line := range strings.Split(string(data), "\n") {
-			var code string
-			code, inComment = kcond.StripComments(line, inComment)
-			m := includeLine.FindStringSubmatch(code)
-			if m == nil {
+		for _, d := range incLines(data, p) {
+			if ext := path.Ext(d.name); !d.quoted || (ext != ".c" && ext != ".S") {
 				continue
 			}
-			cond := kcond.Const(true)
-			if i < len(cpp) {
-				cond = cpp[i]
-			}
-			if target, ok := resolveInclude(fsys, path.Dir(p), m[1]); ok {
-				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: cond})
+			if target, ok := resolveInclude(fsys, path.Dir(p), d.name); ok {
+				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: d.cond})
 			} else {
-				inc.Unresolved = append(inc.Unresolved, Include{From: p, Cond: cond, Name: m[1]})
+				inc.Unresolved = append(inc.Unresolved, Include{From: p, Cond: d.cond, Name: d.name})
 			}
 		}
 	}
@@ -266,11 +403,9 @@ func (r *Result) include(fsys fs.FS) {
 		}
 	}
 	for _, in := range r.Includes.Unresolved {
-		for _, c := range r.compiled[in.From] {
-			for _, f := range c.flags {
-				if t := path.Join(f.arg, in.Name); f.kind == includeDir && isFile(fsys, t) {
-					edges[t] = append(edges[t], edge{in.From, kcond.And(in.Cond, f.cond)})
-				}
+		for _, t := range r.includeDirs(in.From, in.Name, in.Cond) {
+			if isFile(fsys, t.file) {
+				edges[t.file] = append(edges[t.file], edge{in.From, t.cond})
 			}
 		}
 	}

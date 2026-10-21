@@ -38,9 +38,13 @@ the lines and their AND; with `--config`, whether that holds for the
     net/ipv4/tcp_ipv4.c	x86_64	built	CONFIG_INET && CONFIG_NET	true	CONFIG_INET && CONFIG_NET	applies
 
 A file is `built` under its condition, `unlisted` when no Makefile names
-it, `not built` when it belongs to another architecture, or a `header`,
-whose condition is its region when that names a `CONFIG_` option and
-unknown otherwise, as nothing tells which builds include it.
+it, and `not built` when it belongs to another architecture. A header
+outside `include/` and `arch/*/include/` is `built` where the files that
+include it are, directly or through other headers; a file no Makefile
+names adds nothing. When no includer is built, or a public header
+includes it, it is a `header`, whose condition is its region when that
+names a `CONFIG_` option and unknown otherwise, as nothing tells which
+builds include it.
 
 `diff` reads commits, or the commits of a range such as a stable update:
 the kernel files each one changes, the `#if` region (`#[cfg]` in Rust)

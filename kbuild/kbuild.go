@@ -5,13 +5,16 @@
 // cvehound's crawler descends the tree but with conditional values,
 // composite objects and directory conditions taken from the Makefile that
 // lists each directory. A .c or .S file a listed source #includes is
-// compiled with it, under that source's condition.
+// compiled with it, under that source's condition, and so is a header
+// outside the public include directories, where the files that #include
+// it are (see Result.Lookup).
 package kbuild
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -34,25 +37,33 @@ type Options struct {
 	// from two goroutines. They are the same in every build, so the crawls
 	// of one tree can share a scan.
 	Includes *Includes
+	// Lookups are the files the caller will look up (see Result.Lookup):
+	// when one is a header outside include/ and arch/<arch>/include/, the
+	// tree's #include lines are listed during the crawl rather than at the
+	// first lookup, for the crawls sharing its Includes as well.
+	Lookups []string
 }
 
 // Status tells how a file relates to the build.
 type Status uint8
 
 const (
-	// Built: a Makefile lists the file, or a listed source #includes it;
-	// it is compiled when its condition holds.
+	// Built: a Makefile lists the file, or a listed source #includes it,
+	// a header directly or through other headers; it is compiled when its
+	// condition holds.
 	Built Status = iota
 	// Unlisted: no Makefile the crawl follows lists the file and no source
 	// they list #includes it: the build enters its directory, as for a
 	// file only a generated source includes, or the arch's own rules build
-	// it, as for arch/arm/boot/compressed. Its condition is unknown.
+	// it, as for arch/arm/boot/compressed. A header is unlisted when no
+	// listed file includes it (see Result.Lookup). Its condition is
+	// unknown.
 	Unlisted
 	// NotBuilt: the file belongs to another architecture, is the twin of a
 	// listed file for the other word size, or is outside arch/ in a
 	// directory the build never enters.
 	NotBuilt
-	// NotSource: not a .c, .S or .rs file.
+	// NotSource: not a .c, .S, .rs or .h file.
 	NotSource
 )
 
@@ -82,6 +93,14 @@ type Result struct {
 	// subdirFlags holds each directory's subdir-ccflags-y and
 	// subdir-asflags-y while the tree is crawled.
 	subdirFlags map[string][2][]flag
+
+	// A header is looked up when first asked about, in fsys; mu guards
+	// the lookups, so Lookup, Module and Define are safe for concurrent
+	// use. headers holds the condition of each header looked up, nil for
+	// one found unlisted; Files keeps to the sources.
+	fsys    fs.FS
+	mu      sync.Mutex
+	headers map[string]*kcond.Expr
 }
 
 // flagKind tells what a compiler flag names.
@@ -112,6 +131,8 @@ type compilation struct {
 // macro x a -D flag of its object defines, and without it. A file a source
 // #includes is compiled with that source's flags.
 func (r *Result) Define(p, x string) (set, unset *kcond.Expr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.fold(p, func(c compilation) (*kcond.Expr, *kcond.Expr) {
 		var fs []*kcond.Expr
 		for _, f := range c.flags {
@@ -153,11 +174,30 @@ func (r *Result) fold(p string, f func(compilation) (a, b *kcond.Expr), seen map
 // ways, as one source compiled on its own and #included into a module's,
 // has both. Each is false where it never holds.
 func (r *Result) Module(p string) (builtin, module *kcond.Expr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.fold(p, func(c compilation) (*kcond.Expr, *kcond.Expr) { return c.builtin, c.module }, map[string]bool{})
 }
 
-// Lookup returns the condition of a source file.
+// Lookup returns the condition of a source file or header. A header is
+// built where the files that #include it are compiled, each under the
+// condition of its directive's line, through other headers recursively:
+// the OR over its includers, which the #include lines of the tree, listed
+// at the first lookup, tell. An includer that is not
+// built, or that no Makefile lists, adds nothing, as for an included .c
+// file. A header under include/ or arch/<arch>/include/, which <...>
+// reaches from anywhere, one no listed file includes, and one a public
+// header includes are unlisted.
 func (r *Result) Lookup(p string) (*kcond.Expr, Status) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lookup(p)
+}
+
+func (r *Result) lookup(p string) (*kcond.Expr, Status) {
+	if path.Ext(p) == ".h" {
+		return r.header(p)
+	}
 	if !slices.Contains(sourceExts, path.Ext(p)) {
 		return nil, NotSource
 	}
@@ -200,6 +240,130 @@ func (r *Result) Lookup(p string) (*kcond.Expr, Status) {
 		return nil, Unlisted
 	}
 	return nil, NotBuilt
+}
+
+// publicHeader reports whether p is under an include directory every
+// file reaches with <...>: include/ or arch/<arch>/include/.
+func publicHeader(p string) bool {
+	if strings.HasPrefix(p, "include/") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(p, "arch/"); ok {
+		_, sub, _ := strings.Cut(rest, "/")
+		return strings.HasPrefix(sub, "include/")
+	}
+	return false
+}
+
+// header looks a header up (see Lookup), memoizing the result in headers
+// and includers. The includers are scanned a level at a time: the files
+// including the header, then those including them. A directive counts
+// when its name resolves to the header as #include does, next to the
+// including file or in the directories above it, or in a -I directory of
+// the includer's object. A header reached from no built source stays
+// unlisted rather than not built.
+func (r *Result) header(p string) (*kcond.Expr, Status) {
+	if e, ok := r.headers[p]; ok {
+		if e == nil {
+			return nil, Unlisted
+		}
+		return e, Built
+	}
+	if publicHeader(p) || r.fsys == nil {
+		return nil, Unlisted
+	}
+	roots, edges := map[string]*kcond.Expr{}, map[string][]edge{}
+	scanned := map[string]bool{p: true}
+	known := true
+	for level := []string{p}; len(level) > 0 && known; {
+		files, err := r.Includes.includers(r.fsys, level)
+		if err != nil {
+			// shortcut: Lookup reports no error, so a read that fails
+			// leaves the header unknown; report it if that misleads.
+			known = false
+			break
+		}
+		var next []string
+		for _, f := range slices.Sorted(maps.Keys(files)) {
+			for _, d := range files[f] {
+				for _, t := range r.targets(f, d, level) {
+					edges[t.file] = append(edges[t.file], edge{f, t.cond})
+					if path.Ext(f) == ".h" {
+						if publicHeader(f) {
+							known = false
+						} else if !scanned[f] {
+							scanned[f] = true
+							next = append(next, f)
+						}
+						continue
+					}
+					if e, st := r.lookup(f); st == Built {
+						roots[f] = e
+					}
+				}
+			}
+		}
+		level = next
+	}
+	conds := map[string]*kcond.Expr{}
+	if known {
+		conds = dirConditions(roots, edges, false)
+	}
+	for h := range scanned {
+		if c, ok := conds[h]; ok {
+			r.headers[h], r.includers[h] = c, edges[h]
+		}
+	}
+	if c, ok := conds[p]; ok {
+		return c, Built
+	}
+	r.headers[p] = nil
+	return nil, Unlisted
+}
+
+// target is a file an #include names, under the condition of its line
+// ANDed with that of the -I flag finding it.
+type target struct {
+	file string
+	cond *kcond.Expr
+}
+
+// targets returns the headers of level that directive d of file f names.
+func (r *Result) targets(f string, d incLine, level []string) []target {
+	if !slices.ContainsFunc(level, func(h string) bool { return path.Base(h) == path.Base(d.name) }) {
+		return nil
+	}
+	if d.quoted {
+		if t, ok := resolveInclude(r.fsys, path.Dir(f), d.name); ok {
+			if slices.Contains(level, t) {
+				return []target{{t, d.cond}}
+			}
+			return nil // another file of that name is nearer
+		}
+	}
+	// shortcut: a header has no object of its own, so the -I directories
+	// of the objects including it are not searched for its directives.
+	var out []target
+	for _, t := range r.includeDirs(f, d.name, d.cond) {
+		if slices.Contains(level, t.file) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// includeDirs returns the files the -I directories of the objects compiled
+// from src give the #include name on a line under cond.
+func (r *Result) includeDirs(src, name string, cond *kcond.Expr) []target {
+	var out []target
+	for _, c := range r.compiled[src] {
+		for _, f := range c.flags {
+			if f.kind == includeDir {
+				out = append(out, target{path.Join(f.arg, name), kcond.And(cond, f.cond)})
+			}
+		}
+	}
+	return out
 }
 
 // rootLists are the top-level variables that hold the directories the
@@ -391,7 +555,8 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	pre := map[string]string{"srctree": ".", "objtree": ".", "SRCARCH": arch, "ARCH": arch}
 	r := &Result{Arch: arch, Files: map[string]*kcond.Expr{}, reached: map[string]bool{},
-		makes: map[string]bool{}, compiled: map[string][]compilation{}, subdirFlags: map[string][2][]flag{}}
+		makes: map[string]bool{}, compiled: map[string][]compilation{}, subdirFlags: map[string][2][]flag{},
+		fsys: fsys, headers: map[string]*kcond.Expr{}}
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && (d.Name() == "Makefile" || d.Name() == "Kbuild") {
 			r.makes[path.Dir(p)] = true
@@ -403,8 +568,15 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	var scan sync.WaitGroup
 	var scanErr error
+	var names map[string][]incName
+	var read map[string][]incLine
 	if r.Includes = opts.Includes; r.Includes == nil {
 		scan.Go(func() { r.Includes, scanErr = ScanIncludes(fsys) })
+		if slices.ContainsFunc(opts.Lookups, func(p string) bool { return path.Ext(p) == ".h" && !publicHeader(p) }) {
+			// A listing that fails is tried again, and reported, at the
+			// first lookup.
+			scan.Go(func() { names, read, _ = listIncludes(fsys) })
+		}
 	}
 	if arch == "x86" || arch == "x86_64" {
 		r.bits = "64"
@@ -516,6 +688,9 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	if scan.Wait(); scanErr != nil {
 		return nil, scanErr
+	}
+	if names != nil {
+		r.Includes.names, r.Includes.read = names, read
 	}
 	r.include(fsys)
 	r.subdirFlags = nil

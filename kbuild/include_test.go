@@ -178,6 +178,10 @@ func (g grepTree) Grep(strs []string, globs ...string) ([]string, error) {
 	return nil, fs.ErrInvalid
 }
 
+func (g grepTree) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
+	return nil, fs.ErrInvalid
+}
+
 // ScanIncludes reads only the files a GrepFS finds.
 func TestScanIncludesGrep(t *testing.T) {
 	fsys := grepTree{FS: tree(map[string]string{
@@ -250,4 +254,60 @@ func TestForcedIncludes(t *testing.T) {
 		"lib/vdso/gettimeofday.c": "",
 	})
 	expect(t, r, map[string]string{"lib/vdso/gettimeofday.c": "CONFIG_V"})
+}
+
+// A header outside include/ and arch/<arch>/include/ is built where the
+// files including it are, under the condition of each directive's line,
+// through other headers and -I directories; a file the build never
+// compiles or no Makefile lists adds nothing, and the header is unlisted
+// when no listed file includes it or when it is public.
+func TestHeaders(t *testing.T) {
+	files := map[string]string{
+		"Makefile":             "drivers-y := drivers/\n",
+		"drivers/Makefile":     "obj-$(CONFIG_FOO) += foo/\n",
+		"drivers/foo/Makefile": "obj-y += a.o\nobj-$(CONFIG_FOO_B) += b.o\nobj-$(CONFIG_FOO_M) += m.o\nccflags-y := -I $(src)/include\n",
+		"drivers/foo/a.c":      "#include \"foo.h\"\n#include <bar.h>\n#include \"x.h\"\n#include <linux/pub.h>\n",
+		"drivers/foo/b.c":      "#ifdef CONFIG_FOO_X\n#include \"foo.h\"\n#endif\n",
+		"drivers/foo/m.c":      "#include \"mod.h\"\n",
+		// foo.h includes sub.h; x.h and y.h include each other.
+		"drivers/foo/foo.h": "#include \"sub/sub.h\"\n", "drivers/foo/sub/sub.h": "",
+		"drivers/foo/x.h": "#include \"y.h\"\n", "drivers/foo/y.h": "#include \"x.h\"\n",
+		"drivers/foo/include/bar.h": "", "drivers/foo/mod.h": "",
+		// Nothing includes orphan.h, a file the build never compiles
+		// includes tools.h, an unlisted source odd.h.
+		"drivers/foo/orphan.h": "",
+		"drivers/foo/tools.h":  "", "tools/t.c": "#include \"../drivers/foo/tools.h\"\n",
+		"drivers/foo/odd.h": "", "drivers/foo/unlisted.c": "#include \"odd.h\"\n#include \"foo.h\"\n",
+		"include/linux/pub.h": "",
+	}
+	// The crawl lists the #include lines when a private header is to be
+	// looked up, and only then.
+	for _, lookups := range [][]string{{"drivers/foo/foo.h"}, {"include/linux/pub.h", "drivers/foo/a.c"}, nil} {
+		r, err := Crawl(tree(files), Options{Arch: "x86", Lookups: lookups})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed, want := r.Includes.names != nil, lookups != nil && lookups[0] == "drivers/foo/foo.h"; listed != want {
+			t.Errorf("Crawl with Lookups %q listed the #include lines: %v, want %v", lookups, listed, want)
+		}
+	}
+	r := crawl(t, files)
+	expect(t, r, map[string]string{
+		"drivers/foo/foo.h":         "CONFIG_FOO",
+		"drivers/foo/sub/sub.h":     "CONFIG_FOO",
+		"drivers/foo/include/bar.h": "CONFIG_FOO",
+		"drivers/foo/x.h":           "CONFIG_FOO",
+		"drivers/foo/y.h":           "CONFIG_FOO",
+		"drivers/foo/mod.h":         "CONFIG_FOO && CONFIG_FOO_M",
+	})
+	for _, p := range []string{"drivers/foo/orphan.h", "drivers/foo/tools.h", "drivers/foo/odd.h", "include/linux/pub.h"} {
+		if _, st := r.Lookup(p); st != Unlisted {
+			t.Errorf("%s: %v, want Unlisted", p, st)
+		}
+	}
+	// A header is built into a module where the sources including it are.
+	builtin, module := r.Module("drivers/foo/mod.h")
+	if got := builtin.String() + " / " + module.String(); got != "CONFIG_FOO && CONFIG_FOO_M=y / CONFIG_FOO && CONFIG_FOO_M=m" {
+		t.Errorf("Module(mod.h) = %s", got)
+	}
 }
