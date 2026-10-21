@@ -32,10 +32,14 @@ type Code struct {
 	// Rust is set for a Rust source, whose regions are its #[cfg]
 	// attributes rather than preprocessor directives.
 	Rust bool
+	// KeepAssembly leaves AssemblyAtom in the conditions of a header's
+	// lines, for a caller that follows the C and the assembly units
+	// including it apart (see Lines).
+	KeepAssembly bool
 }
 
-// assemblyAtom stands for __ASSEMBLY__ where it is unknown.
-const assemblyAtom = "defined(__ASSEMBLY__)"
+// AssemblyAtom stands for __ASSEMBLY__ where it is unknown (see Code).
+const AssemblyAtom = "defined(__ASSEMBLY__)"
 
 // assemblyMacro reports whether name is defined exactly in assembly files:
 // __ASSEMBLY__, or __ASSEMBLER__, which the compiler defines for them.
@@ -72,7 +76,8 @@ const maxDefinition = 4096
 // it right after testing it, as a guard; an #include may define it
 // again; a definition past maxDefinition reads as the atom again. code
 // tells how the file is compiled; a header is compiled into C and assembly
-// units alike, so its lines count where either compiles them.
+// units alike, so its lines count where either compiles them, unless
+// code.KeepAssembly.
 func Lines(src []byte, code Code) ([]*Expr, error) {
 	lines := strings.Split(string(src), "\n")
 	if lines[len(lines)-1] == "" {
@@ -218,21 +223,27 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 	if len(stack) > 0 {
 		return nil, fmt.Errorf("kcond: %d unterminated #if", len(stack))
 	}
-	if code.Assembly == Unknown {
+	if code.Assembly == Unknown && !code.KeepAssembly {
 		either := map[*Expr]*Expr{}
 		for i, c := range conds {
 			e, ok := either[c]
 			if !ok {
-				e = c
-				if slices.Contains(c.Opaque(), assemblyAtom) {
-					e = Or(With(c, assemblyAtom, true), With(c, assemblyAtom, false))
-				}
+				e = EitherUnit(c)
 				either[c] = e
 			}
 			conds[i] = e
 		}
 	}
 	return conds, nil
+}
+
+// EitherUnit is the condition c of a header's line where a C or an
+// assembly unit compiles it, whichever: c with AssemblyAtom ORed away.
+func EitherUnit(c *Expr) *Expr {
+	if !slices.Contains(c.Opaque(), AssemblyAtom) {
+		return c
+	}
+	return Or(With(c, AssemblyAtom, true), With(c, AssemblyAtom, false))
 }
 
 // splitDirective splits the text after # into the directive name and the
@@ -724,7 +735,7 @@ func PageSizeHolds(atom string, size uint64) (holds, ok bool) {
 func macro(name string, code Code) *Expr {
 	if assemblyMacro(name) {
 		if code.Assembly == Unknown {
-			return Var(assemblyAtom, Enabled)
+			return Var(AssemblyAtom, Enabled)
 		}
 		return Const(code.Assembly == True)
 	}

@@ -38,13 +38,16 @@ the lines and their AND; with `--config`, whether that holds for the
     net/ipv4/tcp_ipv4.c	x86_64	built	CONFIG_INET && CONFIG_NET	true	CONFIG_INET && CONFIG_NET	applies
 
 A file is `built` under its condition, `unlisted` when no Makefile names
-it, and `not built` when it belongs to another architecture. A header
-outside `include/` and `arch/*/include/` is `built` where the files that
-include it are, directly or through other headers; a file no Makefile
-names adds nothing. When no includer is built, or a public header
-includes it, it is a `header`, whose condition is its region when that
-names a `CONFIG_` option and unknown otherwise, as nothing tells which
-builds include it.
+it, and `not built` when it belongs to another architecture. A header is
+`built` where the files that include it are, directly or through other
+headers, each under the condition of its `#include` line: a quoted name
+next to the including file, `<name>` through the build's include
+directories and the `asm-generic` headers the `generic-y` and
+`mandatory-y` lists stand in for, and the headers `-include` flags name;
+a file no Makefile names adds nothing. A header no listed file includes,
+as a uapi header only userspace reads, or one only generated sources,
+linker scripts or boot code read, is a `header`, whose condition is its
+region when that names a `CONFIG_` option and unknown otherwise.
 
 An object `obj-y` lists is linked only where its directory is entered
 through `obj-y` too, so under `obj-$(CONFIG_X) += dir/` it needs
@@ -65,10 +68,10 @@ the condition; the file rows follow indented, so `grep -v '^ '` is the
 one-line view:
 
     $ kcond diff 8eb36164d1a6
-    8eb36164d1a6	generic	CONFIG_BONDING
+    8eb36164d1a6	generic	CONFIG_BONDING || (CONFIG_CHELSIO_T4 && CONFIG_ETHERNET && CONFIG_NET_VENDOR_CHELSIO) || ... || CONFIG_INFINIBAND
       drivers/net/bonding/bond_main.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
       drivers/net/bonding/bond_options.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
-      include/net/bond_options.h	header		region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
+      include/net/bond_options.h	built	CONFIG_BONDING || (CONFIG_CHELSIO_T4 && CONFIG_ETHERNET && CONFIG_NET_VENDOR_CHELSIO) || ... || CONFIG_INFINIBAND	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
     $ kcond diff v6.12.1..v6.12.2 --config .config | grep -v '^ ' | grep -w applies
     78de864e8af3649b03f905e206e6f06f3aa4c006	applies	true
     cfe3e04e9a5704aac92aaa2b45706850d96af0b9	applies	true
@@ -76,8 +79,9 @@ one-line view:
     ...
 
 A range lists its commits oldest first and reads the Makefiles at its
-end; the 815 commits of v6.12.1..v6.12.2 take about 8 seconds with
-`--config` and 22 reading every build. A merge in a range reads as its
+end; the 815 commits of v6.12.1..v6.12.2 take about 10 seconds with
+`--config` and 40 reading every build, the public headers they change
+looked up in each. A merge in a range reads as its
 own change, the hunks that differ from every parent, as `git show`
 prints them, so a clean merge reads `none`; a merge named alone reads as
 its diff to its first parent, everything it brings. A commit that
