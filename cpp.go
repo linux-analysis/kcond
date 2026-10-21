@@ -332,9 +332,10 @@ func StripComments(line string, inComment bool) (string, bool) {
 }
 
 // ParseIf converts a C preprocessor #if expression. defined(), IS_ENABLED(),
-// IS_BUILTIN(), IS_MODULE(), IS_REACHABLE() (approximated as IS_ENABLED),
-// config_enabled() (IS_BUILTIN before v4.9) and bare CONFIG_ symbols map to
-// tristate variables; a CONFIG_X_MODULE macro means X=m. Integer literals are constants. Arch macros such as
+// IS_BUILTIN(), IS_MODULE(), IS_REACHABLE() (X=y, or X=m with MODULE
+// defined), config_enabled() (IS_BUILTIN before v4.9) and bare CONFIG_
+// symbols map to tristate variables; a CONFIG_X_MODULE macro means X=m.
+// Integer literals are constants. Arch macros such as
 // __i386__ and comparisons of BITS_PER_LONG with an integer map to the Kconfig
 // symbols they follow, and __ASSEMBLY__ to what code tells of the file (see
 // Code and macro). Any other operand, such as a comparison or arithmetic,

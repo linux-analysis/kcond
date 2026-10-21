@@ -91,6 +91,21 @@ func TestGuardsSingleStatements(t *testing.T) {
 	})
 }
 
+func TestGuardsReachable(t *testing.T) {
+	checkGuards(t, `void f(void)
+{
+	if (IS_REACHABLE(CONFIG_A))
+		a();
+}
+`, []string{
+		"true",
+		"true",
+		"true",
+		`("defined(MODULE)" && CONFIG_A=m) || CONFIG_A=y`,
+		"true",
+	})
+}
+
 func TestGuardsNestedAndMixed(t *testing.T) {
 	checkGuards(t, `void f(struct dev *dev)
 {
