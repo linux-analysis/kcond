@@ -528,16 +528,16 @@ type commit struct {
 }
 
 // commitsOf lists the commits the arguments name: hashes, and the commits
-// of each A..B range. A hash reads its Makefiles at its parent, then at
-// itself; a range's commits read them at the range's end first, the tree
-// a config that is checked against them was built from, so that the whole
-// range takes one crawl.
+// of each A..B range. A hash reads its Makefiles at itself, then at its
+// parent for the files it deletes; a range's commits read them at the
+// range's end first, the tree a config that is checked against them was
+// built from, so that the whole range takes one crawl.
 func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit, error) {
 	var commits []commit
 	for _, a := range args {
 		_, end, ok := strings.Cut(a, "..")
 		if !ok {
-			commits = append(commits, commit{a, []string{a + "^", a}})
+			commits = append(commits, commit{a, []string{a, a + "^"}})
 			continue
 		}
 		// A...B ends at B too, and A.. at HEAD.
@@ -552,7 +552,7 @@ func commitsOf(ctx context.Context, o opts, dir string, args []string) ([]commit
 			fmt.Fprintf(o.stderr, "kcond: %s has no commits\n", a)
 		}
 		for _, h := range hashes {
-			commits = append(commits, commit{h, []string{end, h + "^", h}})
+			commits = append(commits, commit{h, []string{end, h, h + "^"}})
 		}
 	}
 	return commits, nil
