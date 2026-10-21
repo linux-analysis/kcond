@@ -61,7 +61,12 @@ const maxDefinition = 4096
 // error. An include guard (a leading #ifndef X followed by #define X) adds no
 // condition. A macro the file itself #defines or #undefs is known after
 // that, where it would otherwise be an opaque atom: defined there, or not,
-// under the condition of the directive's line; an #include may define it
+// under the condition of the directive's line, and in a C or assembly
+// source undefined before the first #include, as nothing else could have
+// defined it (qspinlock.c tests the macro it defines before including
+// itself again), though in a header the file including it may have (as
+// for CREATE_TRACE_POINTS in define_trace.h), unless the header defines
+// it right after testing it, as a guard; an #include may define it
 // again; a definition past maxDefinition reads as the atom again. code
 // tells how the file is compiled; a header is compiled into C and assembly
 // units alike, so its lines count where either compiles them.
@@ -69,6 +74,25 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 	lines := strings.Split(string(src), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
+	}
+	defs := map[string]*Expr{} // the macros the file defines or undefines
+	test := ""                 // the #if or #ifndef directive just before
+	for inComment, i := false, 0; i < len(lines); i++ {
+		var text string
+		text, inComment = StripComments(lines[i], inComment)
+		if d, ok := strings.CutPrefix(strings.TrimSpace(text), "#"); ok {
+			name, rest := splitDirective(d)
+			if id := firstIdent(rest); name == "define" && fileMacro(id) {
+				// In a header only a guard: defined right after its test.
+				if toks, _ := lexIf(test); code.Assembly != Unknown || slices.Contains(toks, id) {
+					defs[id] = Const(false)
+				}
+			}
+			test = ""
+			if name == "if" || name == "ifndef" {
+				test = rest
+			}
+		}
 	}
 	type frame struct {
 		prev    []*Expr // conditions of the earlier branches
@@ -95,7 +119,6 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 		}
 	}
 	inComment, first, guard := false, true, ""
-	defs := map[string]*Expr{} // the macros the file defines or undefines
 	track := func(id string, e *Expr) {
 		if len(e.String()) > maxDefinition {
 			delete(defs, id)
