@@ -531,6 +531,9 @@ type listing struct {
 	dir, src string
 	modes
 	flags []flag
+	// linked is set for an object of obj-y or obj-m: Kbuild compiles its
+	// built-in form only where the directory has need-builtin (see Crawl).
+	linked bool
 }
 
 type edge struct {
@@ -608,7 +611,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		}
 	}
 
-	edges := map[string][]edge{}
+	edges, linkEdges := map[string][]edge{}, map[string][]edge{}
 	var listings []listing
 	processed := map[string]bool{}
 	var queue []string
@@ -625,6 +628,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		listings = append(listings, ls...)
 		for _, s := range subs {
 			edges[s.dir] = append(edges[s.dir], edge{"", kcond.Relax(s.cond)})
+			linkEdges[s.dir] = append(linkEdges[s.dir], edge{"", kcond.Relax(s.builtin)})
 			queue = append(queue, s.dir)
 		}
 		processed[""] = true
@@ -659,6 +663,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		listings = append(listings, ls...)
 		for _, s := range subs {
 			edges[s.dir] = append(edges[s.dir], edge{d, s.cond})
+			linkEdges[s.dir] = append(linkEdges[s.dir], edge{d, s.builtin})
 			r.reached[s.dir] = true
 			if !processed[s.dir] {
 				queue = append(queue, s.dir)
@@ -666,8 +671,14 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		}
 	}
 
-	// The condition under which the build enters each directory.
+	// The condition under which the build enters each directory, and the
+	// one under which it links the directory's obj-y objects: the top
+	// directories have need-builtin, and a directory passes it on to those
+	// its obj-y lists (scripts/Makefile.build drops the directories of obj-y
+	// without it). A directory entered through obj-m or subdir-y alone
+	// compiles only its modules, lib-y and always-y.
 	dirs := dirConditions(roots, edges, processed[""])
+	links := dirConditions(roots, linkEdges, processed[""])
 	memo, visiting := map[string][2][]flag{}, map[string]bool{}
 	for _, l := range listings {
 		dc, ok := dirs[l.dir]
@@ -677,14 +688,29 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		if !ok {
 			continue
 		}
+		db := dc
+		if l.linked && l.dir != "" {
+			if db = links[l.dir]; db == nil {
+				db = kcond.Const(false)
+			}
+		}
+		// A linked object needs the directory linked, unless it is a module.
 		c := kcond.And(dc, l.cond)
+		if l.linked && db.String() != dc.String() {
+			if l.module.IsConst(false) {
+				c = kcond.And(db, l.cond)
+			} else {
+				c = kcond.And(c, kcond.Or(db, l.module))
+			}
+		}
+		builtin, module := kcond.And(db, l.builtin), kcond.And(dc, l.module)
 		r.Files[l.src] = orExpr(r.Files[l.src], c)
 		fl := r.inherited(l.dir, edges, memo, visiting)
 		sub := fl[0]
 		if path.Ext(l.src) == ".S" {
 			sub = fl[1]
 		}
-		r.compiled[l.src] = append(r.compiled[l.src], compilation{c, kcond.And(dc, l.builtin), kcond.And(dc, l.module), slices.Concat(l.flags, sub)})
+		r.compiled[l.src] = append(r.compiled[l.src], compilation{c, builtin, module, slices.Concat(l.flags, sub)})
 	}
 	if scan.Wait(); scanErr != nil {
 		return nil, scanErr
@@ -782,6 +808,9 @@ func dirConditions(roots map[string]*kcond.Expr, edges map[string][]edge, rootKb
 type subdir struct {
 	dir  string
 	cond *kcond.Expr
+	// builtin is the condition under which obj-y lists the directory,
+	// which gives it need-builtin.
+	builtin *kcond.Expr
 }
 
 // maxComposite bounds the nesting of composite objects.
@@ -793,7 +822,7 @@ func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
 	ev.frozen = true
 	var subs []subdir
 	var ls []listing
-	var words []cword
+	var words, objs []cword // objs: obj-y and obj-m, which link
 	// An object is compiled into a module where obj-m lists it and obj-y
 	// does not, as Kbuild filters obj-m by obj-y.
 	ys, ms := ev.value("obj-y"), ev.value("obj-m")
@@ -829,29 +858,42 @@ func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
 			if isProg {
 				w.text += ".o"
 			}
-			words = append(words, w)
+			if name == "obj-y" {
+				objs = append(objs, w)
+			} else {
+				words = append(words, w)
+			}
 		}
 	}
-	for _, w := range merge(words) {
+	add := func(w cword, linked bool) {
 		switch {
 		case strings.HasSuffix(w.text, "/"):
 			d := cleanPath(path.Join(ev.dir, w.text))
 			if d != "." && !strings.HasPrefix(d, "../") {
-				subs = append(subs, subdir{d, w.cond})
+				subs = append(subs, subdir{d, w.cond, condOf(ys, w.text)})
 			}
 		case strings.HasSuffix(w.text, ".o"):
 			if d, ok := wrappers[ev.dir][w.text]; ok {
-				subs = append(subs, subdir{path.Join(ev.dir, d), w.cond})
+				subs = append(subs, subdir{path.Join(ev.dir, d), w.cond, condOf(ys, w.text)})
 			}
 			k := inKernel(w.cond)
 			if m := condOf(ms, w.text); !m.IsConst(false) {
 				m = kcond.And(m, kcond.Not(condOf(ys, w.text)))
 				k.builtin, k.module = kcond.And(w.cond, kcond.Not(m)), m
 			}
-			ls = append(ls, resolveObject(ev, w.text, k, map[string]bool{w.text: true})...)
+			for _, l := range resolveObject(ev, w.text, k, map[string]bool{w.text: true}) {
+				l.linked = linked
+				ls = append(ls, l)
+			}
 		case strings.HasSuffix(w.text, ".lds"):
 			ls = append(ls, leaf(ev, w.text, inKernel(w.cond))...) // X.lds from X.lds.S
 		}
+	}
+	for _, w := range merge(words) {
+		add(w, false)
+	}
+	for _, w := range merge(objs) {
+		add(w, true)
 	}
 	// .s targets are compiled from C for the offsets headers they
 	// generate, as the top-level Kbuild's kernel/bounds.s.
@@ -954,7 +996,7 @@ func leafAt(ev *evaluator, obj string, k modes, depth int) []listing {
 	for _, s := range stems {
 		for _, ext := range sourceExts {
 			if _, err := fs.Stat(ev.fsys, s+ext); err == nil {
-				return []listing{{ev.dir, s + ext, k, objFlags(ev, obj, ext)}}
+				return []listing{{ev.dir, s + ext, k, objFlags(ev, obj, ext), false}}
 			}
 		}
 	}
@@ -979,7 +1021,7 @@ func leafAt(ev *evaluator, obj string, k modes, depth int) []listing {
 					more = leafAt(ev, strings.TrimPrefix(src, ev.dir+"/"), k.and(c), depth+1)
 				}
 			} else if _, err := fs.Stat(ev.fsys, src); err == nil {
-				more = []listing{{ev.dir, src, k.and(c), objFlags(ev, obj, path.Ext(src))}}
+				more = []listing{{ev.dir, src, k.and(c), objFlags(ev, obj, path.Ext(src)), false}}
 			}
 			if len(more) == 0 {
 				continue

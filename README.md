@@ -46,6 +46,13 @@ includes it, it is a `header`, whose condition is its region when that
 names a `CONFIG_` option and unknown otherwise, as nothing tells which
 builds include it.
 
+An object `obj-y` lists is linked only where its directory is entered
+through `obj-y` too, so under `obj-$(CONFIG_X) += dir/` it needs
+`CONFIG_X=y`, while a module is built wherever its directory is entered. A
+condition shows that gate, as `CONFIG_X=y && CONFIG_Y` for a bool `Y` or
+`(CONFIG_X=y || CONFIG_Y=m)` for a tristate, unless Kconfig settles it: a
+tristate `Y` that depends on or selects `X` is `y` only with `X=y`.
+
 `diff` reads commits, or the commits of a range such as a stable update:
 the kernel files each one changes, the `#if` region (`#[cfg]` in Rust)
 of the changed lines, each file's condition at the commit and the condition of the

@@ -65,7 +65,7 @@ func TestIncludes(t *testing.T) {
 		"kernel/sched/ext/ext.c":                    "CONFIG_SCHED_CLASS_EXT=y",
 		"kernel/sched/ext/idle.c":                   "CONFIG_SCHED_CLASS_EXT=y",
 		"tools/lib/bpf/relo_core.c":                 "CONFIG_BPF_SYSCALL",
-		"drivers/i915/gt/selftests/mock_timeline.c": "CONFIG_DRM_I915 && CONFIG_DRM_I915_SELFTEST",
+		"drivers/i915/gt/selftests/mock_timeline.c": "CONFIG_DRM_I915=y && CONFIG_DRM_I915_SELFTEST",
 		"sound/msnd_pinnacle.c":                     "CONFIG_SND_MSND_CLASSIC || CONFIG_SND_MSND_PINNACLE",
 		"lib/never.c":                               "false",
 		"lib/odd_part.c":                            "true",
@@ -144,11 +144,11 @@ mod w;
 		"rust/kernel/t.rs": "", "rust/kernel/m.rs": "", "rust/kernel/w.rs": "",
 	})
 	expect(t, r, map[string]string{
-		"drivers/binder/node.rs":          "CONFIG_BINDER",
-		"drivers/binder/node/wrapper.rs":  "CONFIG_BINDER",
-		"drivers/binder/freeze.rs":        "CONFIG_BINDER",
-		"drivers/binder/range/mod.rs":     "CONFIG_BINDER",
-		"drivers/binder/range/tree.rs":    "CONFIG_BINDER",
+		"drivers/binder/node.rs":          "CONFIG_BINDER=y",
+		"drivers/binder/node/wrapper.rs":  "CONFIG_BINDER=y",
+		"drivers/binder/freeze.rs":        "CONFIG_BINDER=y",
+		"drivers/binder/range/mod.rs":     "CONFIG_BINDER=y",
+		"drivers/binder/range/tree.rs":    "CONFIG_BINDER=y",
 		"drivers/binder/inline/nested.rs": "",
 		"drivers/binder/nested.rs":        "",
 		"drivers/example.rs":              "",
@@ -293,12 +293,12 @@ func TestHeaders(t *testing.T) {
 	}
 	r := crawl(t, files)
 	expect(t, r, map[string]string{
-		"drivers/foo/foo.h":         "CONFIG_FOO",
-		"drivers/foo/sub/sub.h":     "CONFIG_FOO",
-		"drivers/foo/include/bar.h": "CONFIG_FOO",
-		"drivers/foo/x.h":           "CONFIG_FOO",
-		"drivers/foo/y.h":           "CONFIG_FOO",
-		"drivers/foo/mod.h":         "CONFIG_FOO && CONFIG_FOO_M",
+		"drivers/foo/foo.h":         "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
+		"drivers/foo/sub/sub.h":     "(CONFIG_FOO && CONFIG_FOO_B=m && CONFIG_FOO_X=y) || CONFIG_FOO=y",
+		"drivers/foo/include/bar.h": "CONFIG_FOO=y",
+		"drivers/foo/x.h":           "CONFIG_FOO=y",
+		"drivers/foo/y.h":           "CONFIG_FOO=y",
+		"drivers/foo/mod.h":         "CONFIG_FOO && (CONFIG_FOO=y || CONFIG_FOO_M=m) && CONFIG_FOO_M",
 	})
 	for _, p := range []string{"drivers/foo/orphan.h", "drivers/foo/tools.h", "drivers/foo/odd.h", "include/linux/pub.h"} {
 		if _, st := r.Lookup(p); st != Unlisted {
@@ -307,7 +307,7 @@ func TestHeaders(t *testing.T) {
 	}
 	// A header is built into a module where the sources including it are.
 	builtin, module := r.Module("drivers/foo/mod.h")
-	if got := builtin.String() + " / " + module.String(); got != "CONFIG_FOO && CONFIG_FOO_M=y / CONFIG_FOO && CONFIG_FOO_M=m" {
+	if got := builtin.String() + " / " + module.String(); got != "CONFIG_FOO=y && CONFIG_FOO_M=y / CONFIG_FOO && CONFIG_FOO_M=m" {
 		t.Errorf("Module(mod.h) = %s", got)
 	}
 }
