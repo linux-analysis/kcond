@@ -43,8 +43,8 @@ whose condition is its region when that names a `CONFIG_` option and
 unknown otherwise, as nothing tells which builds include it.
 
 `diff` reads commits, or the commits of a range such as a stable update:
-the kernel files each one changes, the `#if` region of the changed
-lines, each file's condition at the commit and the condition of the
+the kernel files each one changes, the `#if` region (`#[cfg]` in Rust)
+of the changed lines, each file's condition at the commit and the condition of the
 whole change; with `--config`, whether the change applies to that
 `.config`. `--build`, or `--config` for the build it is for, reads that
 one build; without them every build is read, the condition is x86_64's,

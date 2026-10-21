@@ -29,6 +29,9 @@ type Code struct {
 	// files, which Kbuild compiles with -D__ASSEMBLY__, False in C, and
 	// Unknown in headers, which both include.
 	Assembly Tri
+	// Rust is set for a Rust source, whose regions are its #[cfg]
+	// attributes rather than preprocessor directives.
+	Rust bool
 }
 
 // assemblyAtom stands for __ASSEMBLY__ where it is unknown.

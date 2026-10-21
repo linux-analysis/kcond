@@ -25,9 +25,13 @@ type Source struct {
 }
 
 // Analyze computes the preprocessor regions, C guards and code lines of a C
-// source; code is as for Lines. It fails only when the preprocessor
-// directives are unbalanced.
+// source, or the #[cfg] regions of a Rust one (see analyzeRust); code is
+// as for Lines. It fails only when the preprocessor directives are
+// unbalanced.
 func Analyze(src []byte, code Code) (*Source, error) {
+	if code.Rust {
+		return analyzeRust(src), nil
+	}
 	cpp, err := Lines(src, code)
 	if err != nil {
 		return nil, err

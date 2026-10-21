@@ -155,7 +155,7 @@ mod w;
 		"rust/kernel/x.rs":                "CONFIG_RUST && CONFIG_X",
 		"rust/kernel/y.rs":                "CONFIG_RUST && !CONFIG_Y",
 		"rust/kernel/z/mod.rs":            "(CONFIG_A || CONFIG_B=m) && CONFIG_RUST && CONFIG_Z=y",
-		"rust/kernel/t.rs":                `"cfg(test)" && CONFIG_RUST`,
+		"rust/kernel/t.rs":                "false",
 		"rust/kernel/m.rs":                `"defined(MODULE)" && CONFIG_RUST`,
 		"rust/kernel/w.rs":                "CONFIG_RUST && CONFIG_W",
 	})
