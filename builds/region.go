@@ -89,7 +89,7 @@ func (b Build) Plain(e *kcond.Expr) *kcond.Expr {
 	// The gates are read before the rewrite, which drops the =m tests
 	// of symbols this build cannot make modules, and after it, which
 	// uncovers some.
-	return b.gates(kcond.Rewrite(b.gates(e), func(v *kcond.Expr) *kcond.Expr {
+	return b.shorten(b.gates(kcond.Rewrite(b.gates(e), func(v *kcond.Expr) *kcond.Expr {
 		if kcond.IsSymbol(v.Name) && !b.Values.Defined(v.Name) && b.Defined[v.Name] {
 			return kcond.Const(false)
 		}
@@ -103,7 +103,71 @@ func (b Build) Plain(e *kcond.Expr) *kcond.Expr {
 			return kcond.Const(false)
 		}
 		return kcond.Var(v.Name, kcond.Enabled)
-	}))
+	})))
+}
+
+// shorten drops from an OR a term that holds only with another term of
+// the OR: Kconfig lets an option be on only with the options it depends on
+// or selects, so CONFIG_JFFS2_FS || CONFIG_MTD is CONFIG_MTD, and so is
+// (CONFIG_JFFS2_FS && CONFIG_X) || CONFIG_MTD or CONFIG_JFFS2_FS=m ||
+// CONFIG_MTD. A tested value, CONFIG_MTD=y, is not what the option implies
+// and absorbs nothing; a dropped term no longer absorbs, so that two
+// options requiring each other keep one.
+func (b Build) shorten(e *kcond.Expr) *kcond.Expr {
+	if e == nil || e.Op == kcond.OpVar || e.Op == kcond.OpConst {
+		return e
+	}
+	args := make([]*kcond.Expr, 0, len(e.Args))
+	for _, a := range e.Args {
+		args = append(args, b.shorten(a))
+	}
+	if e.Op != kcond.OpOr {
+		return rebuild(e, args)
+	}
+	plain := map[string]bool{} // the options the OR tests enabled
+	for _, a := range args {
+		if a.Op == kcond.OpVar && a.State == kcond.Enabled {
+			plain[a.Name] = true
+		}
+	}
+	implied := func(t *kcond.Expr) bool {
+		vars := []*kcond.Expr{t}
+		if t.Op == kcond.OpAnd {
+			vars = t.Args
+		}
+		for _, v := range vars {
+			if v.Op != kcond.OpVar || !kcond.IsSymbol(v.Name) {
+				continue
+			}
+			if on := append(b.Values.Requires(v.Name), b.Values.Selects(v.Name)...); slices.ContainsFunc(on, func(n string) bool { return plain[n] }) {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]*kcond.Expr, 0, len(args))
+	for _, t := range args {
+		if implied(t) {
+			delete(plain, t.Name)
+			continue
+		}
+		out = append(out, t)
+	}
+	return rebuild(e, out)
+}
+
+// rebuild is e with args for its arguments, e itself when they are its.
+func rebuild(e *kcond.Expr, args []*kcond.Expr) *kcond.Expr {
+	if slices.Equal(args, e.Args) {
+		return e
+	}
+	switch e.Op {
+	case kcond.OpAnd:
+		return kcond.And(args...)
+	case kcond.OpOr:
+		return kcond.Or(args...)
+	}
+	return kcond.Not(args[0])
 }
 
 // gates drops from an AND the alternative X=y || Y=m that a term on Y of
@@ -130,13 +194,7 @@ func (b Build) gates(e *kcond.Expr) *kcond.Expr {
 			args = append(args, b.gates(a))
 		}
 	}
-	switch e.Op {
-	case kcond.OpAnd:
-		return kcond.And(args...)
-	case kcond.OpOr:
-		return kcond.Or(args...)
-	}
-	return kcond.Not(args[0])
+	return rebuild(e, args)
 }
 
 // gateSettled tells whether or has a member Y=m, Y a tristate among names,
