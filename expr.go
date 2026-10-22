@@ -100,6 +100,18 @@ func Or(es ...*Expr) *Expr { return nary(OpOr, es) }
 // applies absorption (A || A && B == A).
 func nary(op Op, es []*Expr) *Expr {
 	identity, absorbing := op == OpAnd, op != OpAnd
+	// An operand alone besides the identity is normalized already, as
+	// only nary builds an AND or an OR.
+	var only *Expr
+	operands := 0
+	for _, e := range es {
+		if !e.IsConst(identity) {
+			only, operands = e, operands+1
+		}
+	}
+	if operands == 1 {
+		return only
+	}
 	var args []*Expr
 	seen := map[string]bool{}
 	var add func(e *Expr) bool
@@ -294,6 +306,9 @@ func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
 	if op == OpOr {
 		dual = OpAnd
 	}
+	if !slices.ContainsFunc(args, func(a *Expr) bool { return a.Op == dual }) {
+		return args, false
+	}
 	keys := map[string]bool{}
 	for _, a := range args {
 		keys[a.key] = true
@@ -307,11 +322,8 @@ func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
 		changed := false
 		members := make([]*Expr, 0, len(a.Args))
 		for _, m := range a.Args {
-			if m.Op == op {
-				kept := slices.DeleteFunc(slices.Clone(m.Args), func(t *Expr) bool { return keys[t.key] })
-				if len(kept) < len(m.Args) {
-					m, changed = nary(op, kept), true
-				}
+			if m.Op == op && slices.ContainsFunc(m.Args, func(t *Expr) bool { return keys[t.key] }) {
+				m, changed = nary(op, slices.DeleteFunc(slices.Clone(m.Args), func(t *Expr) bool { return keys[t.key] })), true
 			}
 			members = append(members, m)
 		}
