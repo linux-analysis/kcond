@@ -448,6 +448,13 @@ config TWICE
 			t.Errorf("Requires(%s) = %q, want %q", name, got, want)
 		}
 	}
+	// A result is the caller's to change.
+	if r := v.Requires("MPTCP"); len(r) > 0 {
+		r[0] = "CONFIG_CHANGED"
+	}
+	if got := strings.Join(v.Requires("MPTCP"), " "); got != "CONFIG_INET CONFIG_NET" {
+		t.Errorf("Requires(MPTCP) after a change of an earlier result = %q", got)
+	}
 	// DependsOn stops at the direct dependencies.
 	for name, want := range map[string]string{"MPTCP": "CONFIG_INET", "INET": "CONFIG_NET", "NET": ""} {
 		if got := strings.Join(v.DependsOn(name), " "); got != want {
