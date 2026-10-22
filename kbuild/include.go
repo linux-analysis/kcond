@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
 )
 
@@ -83,7 +84,7 @@ var (
 // unconditional. A header's conditions keep __ASSEMBLY__, for the lookup
 // to follow its C and assembly units apart.
 func incLines(data []byte, p string) []incLine {
-	code := CodeOf(p)
+	code := kernel.CodeOf(p)
 	code.KeepAssembly = true
 	cpp, _ := source.Lines(data, code)
 	var ds []incLine

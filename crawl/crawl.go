@@ -16,6 +16,7 @@ import (
 	"github.com/linux-analysis/kcond/builds"
 	"github.com/linux-analysis/kcond/gitfs"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 // File is a changed file to look up.
@@ -45,7 +46,7 @@ type Result struct {
 type Options struct {
 	Workers  int               // revisions crawled at once; 4 when 0
 	Progress func(crawled int) // called after each revision crawled, with the count so far
-	// Build, one of builds.ConfigBuilds, is the only build read, and the
+	// Build, one of kernel.ConfigBuilds, is the only build read, and the
 	// architectures are left out; every build is read when it is "".
 	Build string
 }
@@ -57,7 +58,7 @@ func initial(f *File) Result {
 	r := Result{Cond: builds.FileCond{Header: f.Header, Region: f.Region}, Arches: builds.FileArches{Path: f.Path, Header: f.Header}}
 	if f.Header {
 		r.Cond.Status = builds.StatusHeader
-		if pa := builds.PathArch(f.Path); pa != "" && pa != builds.Primary {
+		if pa := kernel.PathArch(f.Path); pa != "" && pa != kernel.Primary {
 			r.Cond.Status = builds.StatusNotBuilt
 		}
 	}
@@ -216,7 +217,7 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		}
 		return results, add(b, false)
 	}
-	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: builds.Primary, Lookups: paths})
+	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: kernel.Primary, Lookups: paths})
 	if errors.Is(err, kbuild.ErrNoMakefile) {
 		return nil, nil
 	}

@@ -31,7 +31,7 @@ import (
 	"github.com/linux-analysis/kcond/crawl"
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
-	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
 	"github.com/linux-analysis/kcond/unidiff"
 )
@@ -97,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.StringVar(&o.tree, "tree", "", "the kernel tree (default: the one the current directory is in)")
 	fs.StringVar(&o.rev, "rev", "", "read the tree at this git revision instead of as checked out")
-	fs.StringVar(&o.build, "build", "", "one build only: "+strings.Join(builds.ConfigBuilds, ", "))
+	fs.StringVar(&o.build, "build", "", "one build only: "+strings.Join(kernel.ConfigBuilds, ", "))
 	fs.StringVar(&o.config, "config", "", "a kernel .config, plain or gzip-compressed")
 	fs.BoolVar(&o.json, "json", false, "print JSON")
 	fs.BoolVar(&o.version, "version", false, "print the version and exit")
@@ -132,8 +132,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
-	if o.build != "" && !slices.Contains(builds.ConfigBuilds, o.build) {
-		fmt.Fprintf(stderr, "kcond: --build takes one of %s\n", strings.Join(builds.ConfigBuilds, ", "))
+	if o.build != "" && !slices.Contains(kernel.ConfigBuilds, o.build) {
+		fmt.Fprintf(stderr, "kcond: --build takes one of %s\n", strings.Join(kernel.ConfigBuilds, ", "))
 		return 2
 	}
 	if o.config != "" {
@@ -399,7 +399,7 @@ func region(fsys fs.FS, q query) (*kcond.Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	src, err := source.Analyze(data, kbuild.CodeOf(q.path))
+	src, err := source.Analyze(data, kernel.CodeOf(q.path))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", q.path, err)
 	}
@@ -439,7 +439,7 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 		if q.path, err = treePath(o, q.path); err != nil {
 			return err
 		}
-		if ok, _ := change.Kernel(q.path); !ok {
+		if _, ok := kernel.FileOf(q.path); !ok {
 			return fmt.Errorf("%w: %s is not a kernel source or header", errUsage, q.path)
 		}
 		queries[i] = q
@@ -465,8 +465,8 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	}
 	err = each(fsys, o, paths, func(b builds.Build) error {
 		for i, q := range queries {
-			_, header := change.Kernel(q.path)
-			fc := builds.BuildCond(q.path, header, regions[i], b)
+			f, _ := kernel.FileOf(q.path)
+			fc := builds.BuildCond(q.path, f.Header, regions[i], b)
 			e, unknown := builds.Combine([]builds.FileCond{fc})
 			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status, Kbuild: condText(fc.Kbuild),
 				Region: fc.Region.String(), Condition: condText(e)}
@@ -634,7 +634,7 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 			// condition: X=y as X for a bool, MODULE and -D macros
 			// resolved.
 			fc, region := res.Cond, res.Cond.Region
-			if build != "" && build != builds.X86_64Build && res.Rev != "" {
+			if build != "" && build != kernel.X86_64Build && res.Rev != "" {
 				var ok bool
 				if fc, ok = res.Builds[build]; ok {
 					region = fc.Region
@@ -714,7 +714,7 @@ func buildUnread(diff string, changes []change.FileChange) bool {
 	}
 	for _, f := range unidiff.Files(diff) {
 		for _, p := range []string{f.OldPath, f.NewPath} {
-			if p != "" && !change.OutsideBuild(p) && !comments[p] {
+			if p != "" && !kernel.OutsideBuild(p) && !comments[p] {
 				return false
 			}
 		}
@@ -742,7 +742,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 		if paths[i], err = treePath(o, p); err != nil {
 			return err
 		}
-		if ok, _ := change.Kernel(paths[i]); !ok {
+		if _, ok := kernel.FileOf(paths[i]); !ok {
 			return fmt.Errorf("%w: %s is not a kernel source or header", errUsage, paths[i])
 		}
 	}
@@ -758,8 +758,8 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	}
 	fas := make([]builds.FileArches, len(paths))
 	for i, p := range paths {
-		_, header := change.Kernel(p)
-		fas[i] = builds.FileArches{Path: p, Header: header}
+		f, _ := kernel.FileOf(p)
+		fas[i] = builds.FileArches{Path: p, Header: f.Header}
 	}
 	err = builds.Each(fsys, nil, paths, func(b builds.Build) error {
 		warn(o, b)
@@ -920,7 +920,7 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 func oneBuild(fsys fs.FS, o opts) (builds.Build, error) {
 	name := buildName(o)
 	if name == "" {
-		name = builds.X86_64Build
+		name = kernel.X86_64Build
 	}
 	b, ok := builds.Named(fsys, name, nil)
 	if !ok {

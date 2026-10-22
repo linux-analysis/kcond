@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linux-analysis/kcond/builds"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 // gzipped compresses data as gzip does /proc/config.gz.
@@ -27,7 +27,7 @@ func gzipped(t *testing.T, data string) string {
 func TestReadGzip(t *testing.T) {
 	const config = "# Linux/x86 6.12.43 Kernel Configuration\nCONFIG_NET=y\nCONFIG_INET=m\n"
 	f, err := Read([]byte(gzipped(t, config)))
-	if err != nil || f.Version != "6.12.43" || f.Build != builds.X86_64Build || f.Config["CONFIG_INET"] != 'm' {
+	if err != nil || f.Version != "6.12.43" || f.Build != kernel.X86_64Build || f.Config["CONFIG_INET"] != 'm' {
 		t.Errorf("gzip config = %+v, %v", f, err)
 	}
 	text, err := Text([]byte(gzipped(t, config)))

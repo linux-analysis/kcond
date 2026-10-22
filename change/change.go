@@ -4,13 +4,12 @@
 package change
 
 import (
-	"path"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/linux-analysis/kcond"
-	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
 	"github.com/linux-analysis/kcond/unidiff"
 )
@@ -41,48 +40,6 @@ type FileChange struct {
 	Code bool
 }
 
-// Kernel reports whether p is a C, assembly or Rust file of the kernel
-// proper (not documentation, tools or scripts), and whether it is a header.
-func Kernel(p string) (ok, header bool) {
-	for _, pre := range []string{"Documentation/", "tools/", "scripts/", "LICENSES/"} {
-		if strings.HasPrefix(p, pre) {
-			return false, false
-		}
-	}
-	switch path.Ext(p) {
-	case ".c", ".S", ".s", ".rs":
-		return true, false
-	case ".h":
-		return true, true
-	}
-	return false, false
-}
-
-// OutsideBuild reports whether building the kernel never reads p:
-// documentation, licenses, selftests, perf, and the top-level files that
-// describe the tree (MAINTAINERS, CREDITS, COPYING, README and the
-// dotfiles). Other tools are left in, as the build runs some (objtool,
-// resolve_btfids, bootconfig), and so is any Kconfig file, as the top one
-// sources Documentation/Kconfig.
-func OutsideBuild(p string) bool {
-	if strings.HasPrefix(path.Base(p), "Kconfig") {
-		return false
-	}
-	if !strings.Contains(p, "/") {
-		switch p {
-		case "MAINTAINERS", "CREDITS", "COPYING", "README":
-			return true
-		}
-		return strings.HasPrefix(p, ".")
-	}
-	for _, pre := range []string{"Documentation/", "LICENSES/", "tools/testing/", "tools/perf/"} {
-		if strings.HasPrefix(p, pre) {
-			return true
-		}
-	}
-	return false
-}
-
 // Changes lists the kernel files the commit hash changes, given its
 // diff, with the condition of the changed lines. Images are read from b as
 // hash^:path and hash:path, and as hash^2:path and on for the further
@@ -105,7 +62,7 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	if p == "" {
 		p = fd.NewPath
 	}
-	ok, header := Kernel(p)
+	f, ok := kernel.FileOf(p)
 	if !ok || len(fd.Hunks) == 0 {
 		return FileChange{}, false
 	}
@@ -122,7 +79,7 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 			bad = true
 			return nil
 		}
-		src, err := source.Analyze(data, kbuild.CodeOf(file))
+		src, err := source.Analyze(data, kernel.CodeOf(file))
 		if err != nil {
 			bad = true
 			return nil
@@ -143,7 +100,7 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	}
 	// Path and Functions are cloned: as substrings they would keep the
 	// whole diff alive for as long as the change.
-	fc = FileChange{Path: strings.Clone(p), Header: header, Region: kcond.Const(false)}
+	fc = FileChange{Path: strings.Clone(p), Header: f.Header, Region: kcond.Const(false)}
 	seen := map[string]bool{}
 	for _, h := range fd.Hunks {
 		if h.Func != "" && !seen[h.Func] {

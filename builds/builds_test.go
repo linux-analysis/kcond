@@ -10,6 +10,7 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 // archTree is a kernel with x86, arm64 and s390: drivers for one SoC
@@ -518,7 +519,7 @@ func TestBuildPlain(t *testing.T) {
 
 // A build reads its Kconfig beside its crawl, for Build.Plain.
 func TestBuildValues(t *testing.T) {
-	if sp, ok := specOf(archTree(), X86_64Build); !ok {
+	if sp, ok := specOf(archTree(), kernel.X86_64Build); !ok {
 		t.Fatal("x86_64: no build")
 	} else if v, err := sp.values(archTree()); v == nil {
 		t.Fatalf("x86_64: no values: %v", err)

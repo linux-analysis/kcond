@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"github.com/linux-analysis/kcond"
-	"github.com/linux-analysis/kcond/builds"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 // File is a kernel .config as Read reads it.
@@ -23,7 +23,7 @@ type File struct {
 	// Version is the kernel version the header names, as written:
 	// 6.12.43+deb13, 6.18.0-rc3, 6.12. It is "" without a header.
 	Version string
-	// Build is the builds.ConfigBuilds name the header or the architecture
+	// Build is the kernel.ConfigBuilds name the header or the architecture
 	// symbol gives, or "" when neither does.
 	Build string
 	// Partial is set when the file looks like a defconfig: no header and
@@ -34,16 +34,11 @@ type File struct {
 
 var headerRe = regexp.MustCompile(`(?m)^# Linux/(\S+) (\S+) Kernel Configuration`)
 
-// buildSymbols are the symbols each architecture's Kconfig forces on, with
-// the build they name.
-var buildSymbols = [][2]string{{"CONFIG_X86_64", builds.X86_64Build}, {"CONFIG_X86_32", "i386"}, {"CONFIG_ARM64", "arm64"},
-	{"CONFIG_ARM", "arm"}, {"CONFIG_PPC", "powerpc"}, {"CONFIG_S390", "s390"}, {"CONFIG_RISCV", "riscv"}, {"CONFIG_LOONGARCH", "loongarch"}}
-
 // ArchSymbols are the symbols that tell the build of a config without a
 // header.
 func ArchSymbols() []string {
-	out := make([]string, len(buildSymbols))
-	for i, s := range buildSymbols {
+	out := make([]string, len(kernel.BuildSymbols))
+	for i, s := range kernel.BuildSymbols {
 		out[i] = s[0]
 	}
 	return out
@@ -124,7 +119,7 @@ func Parse(data []byte) (File, error) {
 		f.Version = string(m[2])
 		switch arch := string(m[1]); arch {
 		case "x86", "x86_64", "i386":
-			f.Build = builds.X86_64Build
+			f.Build = kernel.X86_64Build
 			if arch == "i386" || cfg["CONFIG_X86_32"] != 0 {
 				f.Build = "i386"
 			}
@@ -133,15 +128,15 @@ func Parse(data []byte) (File, error) {
 		}
 	} else {
 		f.Partial = bytes.Count(data, []byte(" is not set")) < partialOff
-		for _, s := range buildSymbols {
+		for _, s := range kernel.BuildSymbols {
 			if cfg[s[0]] != 0 {
 				f.Build = s[1]
 				break
 			}
 		}
 	}
-	if f.Build != "" && !slices.Contains(builds.ConfigBuilds, f.Build) {
-		return File{}, fmt.Errorf("no conditions for %s configurations; the builds are %s", f.Build, strings.Join(builds.ConfigBuilds, ", "))
+	if f.Build != "" && !slices.Contains(kernel.ConfigBuilds, f.Build) {
+		return File{}, fmt.Errorf("no conditions for %s configurations; the builds are %s", f.Build, strings.Join(kernel.ConfigBuilds, ", "))
 	}
 	return f, nil
 }

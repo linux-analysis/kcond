@@ -10,6 +10,7 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/builds"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 func git(t *testing.T, dir string, args ...string) {
@@ -52,22 +53,22 @@ func newKernel(t *testing.T) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	kernel := filepath.Join(t.TempDir(), "linux")
-	git(t, t.TempDir(), "init", "-q", "-b", "master", kernel)
-	return kernel
+	linux := filepath.Join(t.TempDir(), "linux")
+	git(t, t.TempDir(), "init", "-q", "-b", "master", linux)
+	return linux
 }
 
 // A file is looked up at its revisions in order; a source no revision has
 // is missing, a header nothing includes keeps its status, and one a listed
 // source includes is built with it.
 func TestResolve(t *testing.T) {
-	kernel := newKernel(t)
-	commitFile(t, kernel, "Makefile", "core-y := lib/\n", "kbuild")
-	commitFile(t, kernel, "arch/x86/Kconfig", "config X86\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n", "x86")
-	commitFile(t, kernel, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-y += b.o\n", "lib")
-	commitFile(t, kernel, "lib/a.h", "int ah;\n", "a.h")
-	c1 := commitFile(t, kernel, "lib/a.c", "#include \"a.h\"\nint a;\n", "a")
-	c2 := commitFile(t, kernel, "lib/b.c", "int b;\n", "b")
+	linux := newKernel(t)
+	commitFile(t, linux, "Makefile", "core-y := lib/\n", "kbuild")
+	commitFile(t, linux, "arch/x86/Kconfig", "config X86\n\tdef_bool y\n\nconfig A\n\tbool \"a\"\n", "x86")
+	commitFile(t, linux, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-y += b.o\n", "lib")
+	commitFile(t, linux, "lib/a.h", "int ah;\n", "a.h")
+	c1 := commitFile(t, linux, "lib/a.c", "#include \"a.h\"\nint a;\n", "a")
+	c2 := commitFile(t, linux, "lib/b.c", "int b;\n", "b")
 	tr := kcond.Const(true)
 	files := []*File{
 		{Path: "lib/a.c", Region: tr, Revs: []string{c2, c1}},
@@ -78,7 +79,7 @@ func TestResolve(t *testing.T) {
 		{Path: "lib/a.h", Header: true, Region: tr, Revs: []string{c1}},
 	}
 	var crawled int
-	got, err := Resolve(context.Background(), kernel, files, Options{Workers: 2, Progress: func(n int) { crawled = n }})
+	got, err := Resolve(context.Background(), linux, files, Options{Workers: 2, Progress: func(n int) { crawled = n }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestResolve(t *testing.T) {
 		t.Errorf("crawled %d revisions, want 3", crawled)
 	}
 	// With a build, only that one is read: the same condition, no arches.
-	one, err := Resolve(context.Background(), kernel, files[:1], Options{Build: builds.X86_64Build})
+	one, err := Resolve(context.Background(), linux, files[:1], Options{Build: kernel.X86_64Build})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,21 +116,21 @@ func TestResolve(t *testing.T) {
 // A crawl that fails for a reason other than a missing top-level Makefile
 // is an error, not a revision without the files.
 func TestRevGrepError(t *testing.T) {
-	kernel := newKernel(t)
-	commitFile(t, kernel, "Makefile", "core-y := lib/\n", "kbuild")
-	commitFile(t, kernel, "lib/Makefile", "obj-y += a.o\n", "lib")
-	commitFile(t, kernel, "lib/a.c", "int a;\n", "a")
-	commitFile(t, kernel, "lib/b.c", "#include \"a.c\"\n", "b")
+	linux := newKernel(t)
+	commitFile(t, linux, "Makefile", "core-y := lib/\n", "kbuild")
+	commitFile(t, linux, "lib/Makefile", "obj-y += a.o\n", "lib")
+	commitFile(t, linux, "lib/a.c", "int a;\n", "a")
+	commitFile(t, linux, "lib/b.c", "#include \"a.c\"\n", "b")
 	// git grep reads lib/b.c, which the crawl does not otherwise read.
-	oid := revParse(t, kernel, "HEAD:lib/b.c")
-	if err := os.Remove(filepath.Join(kernel, ".git", "objects", oid[:2], oid[2:])); err != nil {
+	oid := revParse(t, linux, "HEAD:lib/b.c")
+	if err := os.Remove(filepath.Join(linux, ".git", "objects", oid[:2], oid[2:])); err != nil {
 		t.Fatal(err)
 	}
 	files := []*File{{Path: "lib/a.c", Region: kcond.Const(true)}}
-	if found, err := Rev(context.Background(), kernel, "HEAD", files, ""); err == nil {
+	if found, err := Rev(context.Background(), linux, "HEAD", files, ""); err == nil {
 		t.Errorf("Rev = %v, nil; want the git grep error", found)
 	}
-	if _, err := Resolve(context.Background(), kernel, []*File{{Path: "lib/a.c", Region: kcond.Const(true), Revs: []string{"HEAD"}}}, Options{}); err == nil {
+	if _, err := Resolve(context.Background(), linux, []*File{{Path: "lib/a.c", Region: kcond.Const(true), Revs: []string{"HEAD"}}}, Options{}); err == nil {
 		t.Error("Resolve succeeded; want the git grep error")
 	}
 }
@@ -138,20 +139,20 @@ func TestRevGrepError(t *testing.T) {
 // there is built where the sources including it are, as in the other
 // builds, not another architecture's file.
 func TestResolveSplitX86(t *testing.T) {
-	kernel := newKernel(t)
-	commitFile(t, kernel, "Makefile", "include $(srctree)/arch/$(SRCARCH)/Makefile\n", "kbuild")
-	commitFile(t, kernel, "arch/x86_64/Kconfig", "config X86_64\n\tdef_bool y\n\nconfig MTRR\n\tbool \"mtrr\"\n", "x86_64")
-	commitFile(t, kernel, "arch/x86_64/Makefile", "core-y += arch/x86_64/kernel/\n", "x86_64")
-	commitFile(t, kernel, "arch/x86_64/kernel/Makefile", "obj-$(CONFIG_MTRR) += ../../i386/kernel/cpu/mtrr/\n", "x86_64")
-	commitFile(t, kernel, "arch/i386/Kconfig", "config X86_32\n\tdef_bool y\n", "i386")
-	commitFile(t, kernel, "arch/i386/kernel/cpu/mtrr/Makefile", "obj-y += main.o\n", "mtrr")
-	commitFile(t, kernel, "arch/i386/kernel/cpu/mtrr/main.c", "#include \"mtrr.h\"\n", "mtrr")
-	commitFile(t, kernel, "arch/i386/kernel/cpu/mtrr/mtrr.h", "int mtrr;\n", "mtrr")
+	linux := newKernel(t)
+	commitFile(t, linux, "Makefile", "include $(srctree)/arch/$(SRCARCH)/Makefile\n", "kbuild")
+	commitFile(t, linux, "arch/x86_64/Kconfig", "config X86_64\n\tdef_bool y\n\nconfig MTRR\n\tbool \"mtrr\"\n", "x86_64")
+	commitFile(t, linux, "arch/x86_64/Makefile", "core-y += arch/x86_64/kernel/\n", "x86_64")
+	commitFile(t, linux, "arch/x86_64/kernel/Makefile", "obj-$(CONFIG_MTRR) += ../../i386/kernel/cpu/mtrr/\n", "x86_64")
+	commitFile(t, linux, "arch/i386/Kconfig", "config X86_32\n\tdef_bool y\n", "i386")
+	commitFile(t, linux, "arch/i386/kernel/cpu/mtrr/Makefile", "obj-y += main.o\n", "mtrr")
+	commitFile(t, linux, "arch/i386/kernel/cpu/mtrr/main.c", "#include \"mtrr.h\"\n", "mtrr")
+	commitFile(t, linux, "arch/i386/kernel/cpu/mtrr/mtrr.h", "int mtrr;\n", "mtrr")
 	var files []*File
 	for _, p := range []string{"arch/i386/kernel/cpu/mtrr/main.c", "arch/i386/kernel/cpu/mtrr/mtrr.h"} {
 		files = append(files, &File{Path: p, Header: strings.HasSuffix(p, ".h"), Region: kcond.Const(true), Revs: []string{"HEAD"}})
 	}
-	got, err := Resolve(context.Background(), kernel, files, Options{})
+	got, err := Resolve(context.Background(), linux, files, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

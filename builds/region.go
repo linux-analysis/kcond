@@ -6,25 +6,9 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
 )
-
-// pageSize is a page size an architecture may have, with the Kconfig
-// symbol that selects it.
-type pageSize struct {
-	bytes  uint64
-	symbol string
-}
-
-// pageSizes are the page sizes of the label arches that offer a choice;
-// the others have 4 KiB pages. A symbol an older tree lacks is opaque
-// there (see free), so the comparison stays unknown.
-var pageSizes = map[string][]pageSize{
-	"arm64":   {{4 << 10, "CONFIG_ARM64_4K_PAGES"}, {16 << 10, "CONFIG_ARM64_16K_PAGES"}, {64 << 10, "CONFIG_ARM64_64K_PAGES"}},
-	"powerpc": {{4 << 10, "CONFIG_PPC_4K_PAGES"}, {16 << 10, "CONFIG_PPC_16K_PAGES"}, {64 << 10, "CONFIG_PPC_64K_PAGES"}, {256 << 10, "CONFIG_PPC_256K_PAGES"}},
-	"loongarch": {{4 << 10, "CONFIG_4KB_2LEVEL"}, {4 << 10, "CONFIG_4KB_3LEVEL"}, {4 << 10, "CONFIG_4KB_4LEVEL"},
-		{16 << 10, "CONFIG_16KB_2LEVEL"}, {16 << 10, "CONFIG_16KB_3LEVEL"}, {64 << 10, "CONFIG_64KB_2LEVEL"}, {64 << 10, "CONFIG_64KB_3LEVEL"}},
-}
 
 // moduleAtom is the atom of #ifdef MODULE, which Kbuild defines for the
 // objects of a module.
@@ -246,14 +230,14 @@ func (b Build) pageSize(region *kcond.Expr) *kcond.Expr {
 		if !ok {
 			return nil
 		}
-		sizes, choice := pageSizes[b.Arch]
+		sizes, choice := kernel.PageSizes[b.Arch]
 		if !choice {
 			return kcond.Const(holds)
 		}
 		var terms []*kcond.Expr
 		for _, s := range sizes {
-			if holds, _ := source.PageSizeHolds(atom, s.bytes); holds {
-				terms = append(terms, kcond.Var(s.symbol, kcond.Enabled))
+			if holds, _ := source.PageSizeHolds(atom, s.Bytes); holds {
+				terms = append(terms, kcond.Var(s.Symbol, kcond.Enabled))
 			}
 		}
 		return kcond.Or(terms...)

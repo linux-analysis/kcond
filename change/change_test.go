@@ -213,29 +213,3 @@ func TestVerdict(t *testing.T) {
 		}
 	}
 }
-
-func TestOutsideBuild(t *testing.T) {
-	for p, want := range map[string]bool{
-		"Documentation/process/howto.rst":      true,
-		"LICENSES/preferred/GPL-2.0":           true,
-		"tools/testing/selftests/net/Makefile": true,
-		"tools/perf/builtin-top.c":             true,
-		"MAINTAINERS":                          true,
-		"CREDITS":                              true,
-		".mailmap":                             true,
-		".gitignore":                           true,
-		"Documentation/Kconfig":                false, // the top Kconfig sources it
-		"Kbuild":                               false,
-		"lib/.gitignore":                       false,
-		"tools/objtool/check.c":                false, // the build runs objtool
-		"tools/include/linux/types.h":          false,
-		"scripts/mod/modpost.c":                false,
-		"Makefile":                             false,
-		"drivers/net/bonding/bond_main.c":      false,
-		"arch/arm64/boot/dts/qcom/sm8650.dtsi": false,
-	} {
-		if got := OutsideBuild(p); got != want {
-			t.Errorf("OutsideBuild(%q) = %v, want %v", p, got, want)
-		}
-	}
-}

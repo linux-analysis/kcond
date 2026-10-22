@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/linux-analysis/kcond"
-	"github.com/linux-analysis/kcond/source"
 )
 
 // tree builds an in-memory kernel tree. Files listed only by name (empty
@@ -824,50 +823,6 @@ obj-$(VDSO64-y)			+= vma.o vdso.o
 	}
 }
 
-func TestKernelOnly(t *testing.T) {
-	for p, want := range map[string]bool{
-		"kernel/signal.c":                             true,
-		"arch/x86/kernel/head_64.S":                   true,
-		"arch/x86/purgatory/purgatory.c":              true,
-		"include/linux/kernel.h":                      false,
-		"arch/x86/include/asm/pvclock.h":              false,
-		"arch/x86/boot/main.c":                        false,
-		"arch/x86/boot/compressed/misc.c":             false,
-		"arch/powerpc/boot/main.c":                    false,
-		"arch/x86/realmode/rm/wakemain.c":             false,
-		"arch/x86/kernel/acpi/realmode/wakemain.c":    false,
-		"arch/x86/entry/vdso/vdso32/vclock_gettime.c": false,
-		"arch/x86/vdso/vclock_gettime.c":              false,
-		"arch/arm64/kernel/vdso32/vgettimeofday.c":    false,
-		"lib/vdso/gettimeofday.c":                     false,
-		// The real-mode trampoline includes it.
-		"arch/x86/kernel/verify_cpu.S": false,
-	} {
-		if got := kernelOnly(p); got != want {
-			t.Errorf("kernelOnly(%s) = %v, want %v", p, got, want)
-		}
-	}
-}
-
-// Assembly files define __ASSEMBLY__, C files do not, and headers are
-// compiled both ways.
-func TestCodeOf(t *testing.T) {
-	for p, want := range map[string]source.Code{
-		"kernel/fork.c":             {Kernel: true},
-		"arch/x86/kernel/head_64.S": {Kernel: true, Assembly: kcond.True},
-		"arch/x86/boot/header.S":    {Assembly: kcond.True},
-		"include/linux/linkage.h":   {Assembly: kcond.Unknown},
-	} {
-		if got := CodeOf(p); got != want {
-			t.Errorf("CodeOf(%s) = %+v, want %+v", p, got, want)
-		}
-	}
-}
-
-// $(eval) runs the Makefile lines it is given under the current
-// condition: drivers/platform/x86/intel and lenovo turn their target lists
-// into obj- lines with $(foreach ..., $(eval $(call ...))), each under the
-// condition of its word, and generic_pt evaluates a $(foreach) of calls.
 func TestEval(t *testing.T) {
 	r := crawl(t, map[string]string{
 		"Makefile":                      "drivers-y := drivers/\n",

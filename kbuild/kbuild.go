@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
 )
 
@@ -510,110 +511,8 @@ func (r *Result) includeDirs(src, name string, cond *kcond.Expr) []target {
 // build starts from.
 var rootLists = []string{"init-y", "core-y", "drivers-y", "net-y", "libs-y", "virt-y"}
 
-// kernelOnly reports whether the source p is compiled only into the kernel,
-// at the configuration's word size, so that its arch macros follow Kconfig
-// (see source.ParseIf). Headers are not, and neither is code a 64-bit
-// configuration also compiles as 16- or 32-bit code: boot code, x86
-// real-mode code, vDSOs (lib/vdso is part of them) and verify_cpu.S, which
-// the real-mode trampoline includes.
-func kernelOnly(p string) bool {
-	if path.Ext(p) == ".h" || p == "arch/x86/kernel/verify_cpu.S" {
-		return false
-	}
-	dirs := strings.Split(path.Dir(p), "/")
-	if len(dirs) > 2 && dirs[0] == "arch" && dirs[2] == "boot" {
-		return false
-	}
-	return !slices.ContainsFunc(dirs, func(d string) bool { return d == "realmode" || strings.HasPrefix(d, "vdso") })
-}
-
-// CodeOf tells how the file p is compiled (see kernelOnly): __ASSEMBLY__ is
-// defined in .S files and not in C ones, and either way in headers, which
-// both include.
-func CodeOf(p string) source.Code {
-	c := source.Code{Kernel: kernelOnly(p)}
-	switch path.Ext(p) {
-	case ".S":
-		c.Assembly = kcond.True
-	case ".h":
-		c.Assembly = kcond.Unknown
-	case ".rs":
-		c.Rust = true
-	}
-	return c
-}
-
-// archDirs are the directories under arch/<arch> that the arch's own rules
-// build in every configuration though no list names them: arch/x86/Makefile
-// builds the boot image and the relocs tool, realmode/Makefile the
-// real-mode blob.
-var archDirs = map[string][]string{"x86": {"boot", "boot/compressed", "realmode/rm", "tools"}}
-
 // programs are the lists of host and user programs, named without .o.
 var programs = []string{"hostprogs", "hostprogs-y", "hostprogs-always-y", "userprogs", "userprogs-always-y"}
-
-// ownList is an object list a Makefile links with its own rules. A gated
-// list is linked into one of the gate objects, which are built when obj-y
-// lists them, as the x86 vDSO's objects are linked into its images.
-type ownList struct {
-	name string
-	gate []string
-}
-
-// vdso64 are the images of the 64-bit and x32 vDSOs, vdso.o and vdsox32.o
-// before v3.16.
-var vdso64 = []string{"vdso-image-64.o", "vdso-image-x32.o", "vdso.o", "vdsox32.o"}
-
-// ownLists name, by directory, the object lists a Makefile links with its
-// own rules rather than through obj-y; they are read like obj-y. Their
-// words may carry the $(obj)/ prefix those rules need.
-var ownLists = map[string][]ownList{
-	"arch/x86/boot":              {{name: "setup-y"}},
-	"arch/x86/boot/compressed":   {{name: "vmlinux-objs-y"}, {name: "VMLINUX_OBJS"}},
-	"arch/x86/realmode/rm":       {{name: "realmode-y"}},
-	"arch/x86/purgatory":         {{name: "purgatory-y"}},
-	"arch/x86/vdso":              {{"vobjs-y", vdso64}},
-	"arch/x86/entry/vdso":        {{"vobjs-y", vdso64}, {"vobjs32-y", []string{"vdso-image-32.o"}}},
-	"arch/x86/entry/vdso/vdso64": {{name: "vobjs-y"}},
-	"arch/x86/entry/vdso/vdso32": {{name: "vobjs-y"}},
-	// The vDSOs of the other label arches, under their directories'
-	// conditions; powerpc's 32- and 64-bit lists share one from v6.1 on,
-	// and its C objects are named in targets alone.
-	"arch/arm64/kernel/vdso":        {{name: "obj-vdso"}},
-	"arch/arm64/kernel/vdso32":      {{name: "obj-vdso"}},
-	"arch/arm/vdso":                 {{name: "obj-vdso"}},
-	"arch/riscv/kernel/vdso":        {{name: "obj-vdso"}},
-	"arch/riscv/kernel/compat_vdso": {{name: "obj-compat_vdso"}},
-	"arch/loongarch/vdso":           {{name: "obj-vdso"}},
-	"arch/powerpc/kernel/vdso":      {{name: "obj-vdso32"}, {name: "obj-vdso64"}, {name: "targets"}},
-	"arch/powerpc/kernel/vdso32":    {{name: "obj-vdso32"}},
-	"arch/powerpc/kernel/vdso64":    {{name: "obj-vdso64"}},
-	"arch/s390/kernel/vdso":         {{name: "obj-vdso"}, {name: "obj-cvdso"}},
-	"arch/s390/kernel/vdso32":       {{name: "obj-vdso32"}},
-	"arch/s390/kernel/vdso64":       {{name: "obj-vdso64"}, {name: "obj-cvdso64"}},
-	// arm64's nVHE hypervisor compiles its list to %.nvhe.o objects and
-	// links them into kvm_nvhe.o, which obj-y lists.
-	"arch/arm64/kvm/hyp/nvhe": {{"hyp-obj-y", []string{"kvm_nvhe.o"}}},
-}
-
-// wrappers are objects that stand for a directory the arch's own rules
-// build: arm64's vdso-wrap.S includes vdso/vdso.so, which the arch
-// Makefile builds before the kernel, and no list names vdso/. The build
-// enters the directory under the object's condition.
-var wrappers = map[string]map[string]string{
-	"arch/arm64/kernel":   {"vdso-wrap.o": "vdso", "vdso32-wrap.o": "vdso32"},
-	"arch/powerpc/kernel": {"vdso32_wrapper.o": "vdso", "vdso64_wrapper.o": "vdso"},
-}
-
-// OwnLists returns the lists of directory dir that its own rules link and
-// the crawler reads like obj-y.
-func OwnLists(dir string) []string {
-	var names []string
-	for _, l := range ownLists[dir] {
-		names = append(names, l.name)
-	}
-	return names
-}
 
 // gate is the condition under which obj-y lists one of the objects of
 // gate, false when it lists none.
@@ -749,7 +648,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 			}
 		}
 	}
-	for _, d := range archDirs[arch] {
+	for _, d := range kernel.ArchDirs[arch] {
 		if d = path.Join("arch", arch, d); r.makes[d] {
 			roots[d] = kcond.Const(true)
 		}
@@ -1015,11 +914,12 @@ func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
 	// An object is compiled into a module where obj-m lists it and obj-y
 	// does not, as Kbuild filters obj-m by obj-y.
 	ys, ms := ev.value("obj-y"), ev.value("obj-m")
-	own := OwnLists(ev.dir)
+	var own []string
 	gates := map[string]*kcond.Expr{}
-	for _, l := range ownLists[ev.dir] {
-		if l.gate != nil {
-			gates[l.name] = gate(ev, l.gate)
+	for _, l := range kernel.OwnLists[ev.dir] {
+		own = append(own, l.Name)
+		if l.Gate != nil {
+			gates[l.Name] = gate(ev, l.Gate)
 		}
 	}
 	// extra-y and always-y name objects built beside the directory's
@@ -1062,7 +962,7 @@ func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
 				subs = append(subs, subdir{d, w.cond, condOf(ys, w.text)})
 			}
 		case strings.HasSuffix(w.text, ".o"):
-			if d, ok := wrappers[ev.dir][w.text]; ok {
+			if d, ok := kernel.Wrappers[ev.dir][w.text]; ok {
 				subs = append(subs, subdir{path.Join(ev.dir, d), w.cond, condOf(ys, w.text)})
 			}
 			k := inKernel(w.cond)

@@ -16,40 +16,8 @@ import (
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
 	"github.com/linux-analysis/kcond/kconfig"
+	"github.com/linux-analysis/kcond/kernel"
 )
-
-// LabelArches are the architectures labels name, in display order; x86
-// stands for both x86-64 and i386.
-var LabelArches = []string{"x86", "arm64", "arm", "powerpc", "s390", "riscv", "loongarch"}
-
-// Primary is the architecture the main condition is computed for.
-const Primary = "x86"
-
-// X86_64Build is the build whose condition the main condition holds.
-const X86_64Build = "x86_64"
-
-// BuildArch names a build as LabelArches do: x86 for both x86 builds.
-func BuildArch(build string) string {
-	if build == X86_64Build || build == "i386" {
-		return "x86"
-	}
-	return build
-}
-
-// ConfigBuilds are the architecture builds conditions are computed for:
-// x86-64, i386 and the other LabelArches.
-var ConfigBuilds = slices.Concat([]string{X86_64Build, "i386"}, LabelArches[1:])
-
-// ArchLabels are the labels Summarize gives other than an architecture
-// name: generic code builds on every label arch of its release but s390,
-// several on more than one, other only on architectures outside
-// LabelArches, none on none.
-var ArchLabels = []string{"generic", "several", "other", "none"}
-
-// OptionalArch is the label arch generic code need not build on: s390 has
-// no wireless, Bluetooth or sound, so leaving it out does not make a change
-// arch-specific.
-const OptionalArch = "s390"
 
 // KconfigOptions are the options every Kconfig analysis uses. COMPILE_TEST
 // builds drivers on architectures they cannot run on, and production
@@ -69,7 +37,7 @@ const (
 // i386 one.
 type Build struct {
 	Arch   string // a label arch
-	Name   string // the build's name in ConfigBuilds
+	Name   string // the build's name in kernel.ConfigBuilds
 	X86_64 bool   // the x86-64 build, which decides whether x86 always builds a file
 	Kbuild *kbuild.Result
 	Values *kconfig.Values // nil when the Kconfig could not be read
@@ -78,21 +46,6 @@ type Build struct {
 	// no Kconfig has yet; nil when they could not be read.
 	Defined map[string]bool
 	Err     error // why Kbuild, Values or Defined is nil
-}
-
-// SrcArch returns the arch/ directory of a label arch in the tree,
-// arch/x86_64 for x86 before v2.6.24, or "" when the tree has none.
-func SrcArch(fsys fs.FS, arch string) string {
-	dirs := []string{arch}
-	if arch == "x86" {
-		dirs = append(dirs, "x86_64")
-	}
-	for _, d := range dirs {
-		if _, err := fs.Stat(fsys, "arch/"+d+"/Kconfig"); err == nil {
-			return d
-		}
-	}
-	return ""
 }
 
 // KconfigEnv is the environment for reading the Kconfig of an arch/
@@ -113,17 +66,17 @@ type buildSpec struct {
 }
 
 // buildSpecs lists the builds of the label arches the tree has: x86-64
-// first, then i386, then the other arches in LabelArches order.
+// first, then i386, then the other arches in kernel.LabelArches order.
 func buildSpecs(fsys fs.FS) []buildSpec {
 	var specs []buildSpec
-	for _, arch := range LabelArches {
-		dir := SrcArch(fsys, arch)
+	for _, arch := range kernel.LabelArches {
+		dir := kernel.SrcArch(fsys, arch)
 		if dir == "" {
 			continue
 		}
 		name := arch
 		if arch == "x86" {
-			name = X86_64Build
+			name = kernel.X86_64Build
 		}
 		specs = append(specs, buildSpec{arch, name, kbuild.Options{Arch: dir}, KconfigEnv(dir)})
 		if arch != "x86" {
@@ -160,7 +113,7 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 
 // Each calls f with each build of the label arches the tree has, one at
 // a time so that only one crawl is held: the x86-64 build first, reusing
-// x86 when it is not nil, then i386, then the other arches in LabelArches
+// x86 when it is not nil, then i386, then the other arches in kernel.LabelArches
 // order. A build whose crawl or Kconfig fails is passed with that field
 // nil and Err saying why, so its files stay unknown rather than its arch
 // absent. The crawls
@@ -173,7 +126,7 @@ func Each(fsys fs.FS, x86 *kbuild.Result, lookups []string, f func(Build) error)
 	}
 	var inc *kbuild.Includes
 	for _, sp := range buildSpecs(fsys) {
-		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == X86_64Build, Defined: defined}
+		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == kernel.X86_64Build, Defined: defined}
 		sp.opts.Includes, sp.opts.Lookups = inc, lookups
 		var crawlErr, kconfigErr error
 		if b.X86_64 && x86 != nil {
@@ -192,7 +145,7 @@ func Each(fsys fs.FS, x86 *kbuild.Result, lookups []string, f func(Build) error)
 	return nil
 }
 
-// Named returns the build named name (one of ConfigBuilds) of the tree,
+// Named returns the build named name (one of kernel.ConfigBuilds) of the tree,
 // its crawl and its Kconfig analysis run at once. ok is false when the
 // tree has no such architecture; a crawl or Kconfig that fails leaves its
 // field nil and Err saying why. lookups are the files the caller will look
@@ -203,7 +156,7 @@ func Named(fsys fs.FS, name string, lookups []string) (b Build, ok bool) {
 		return Build{}, false
 	}
 	sp.opts.Lookups = lookups
-	b = Build{Arch: sp.arch, Name: name, X86_64: name == X86_64Build}
+	b = Build{Arch: sp.arch, Name: name, X86_64: name == kernel.X86_64Build}
 	var analysis sync.WaitGroup
 	var kconfigErr, definedErr error
 	analysis.Go(func() { b.Values, kconfigErr = sp.values(fsys) })
@@ -239,46 +192,6 @@ func Defined(fsys fs.FS) (map[string]bool, error) {
 	return defined, err
 }
 
-// srcArchDirs are the directories whose Makefiles add -I$(src)/$(SRCARCH),
-// keeping a directory of assembly and glue code per architecture.
-var srcArchDirs = []string{"lib/crc/", "lib/crypto/", "lib/raid/raid6/", "lib/raid/xor/"}
-
-// archNames are the directories of arch/.
-var archNames = map[string]bool{"alpha": true, "arc": true, "arm": true, "arm64": true, "csky": true, "hexagon": true,
-	"loongarch": true, "m68k": true, "microblaze": true, "mips": true, "nios2": true, "openrisc": true, "parisc": true,
-	"powerpc": true, "riscv": true, "s390": true, "sh": true, "sparc": true, "um": true, "x86": true, "xtensa": true}
-
-// PathArch is the architecture of a path under arch/, with the old i386,
-// x86_64, ppc and sparc64 directories folded into their successors, or
-// under <dir>/<arch>/ for one of srcArchDirs; "" for other paths.
-func PathArch(p string) string {
-	for _, dir := range srcArchDirs {
-		if rest, ok := strings.CutPrefix(p, dir); ok {
-			if a, _, _ := strings.Cut(rest, "/"); archNames[a] {
-				return a
-			}
-		}
-	}
-	rest, ok := strings.CutPrefix(p, "arch/")
-	if !ok {
-		return ""
-	}
-	a, sub, _ := strings.Cut(rest, "/")
-	switch a {
-	case "x86":
-		if strings.HasPrefix(sub, "um/") {
-			return "um" // user-mode Linux on an x86 host
-		}
-	case "i386", "x86_64":
-		return "x86"
-	case "ppc", "ppc64":
-		return "powerpc"
-	case "sparc64":
-		return "sparc"
-	}
-	return a
-}
-
 // free makes the CONFIG_ symbols of e that defined lacks opaque; nil
 // defined frees nothing.
 func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
@@ -306,7 +219,7 @@ func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
 }
 
 // BuildCond is a changed file's condition in build b: a file under another
-// architecture's directory (see PathArch) is not built, a source gets what
+// architecture's directory (see kernel.PathArch) is not built, a source gets what
 // b's Makefiles say, a header the condition of the files that include it
 // when they are all known (see kbuild.Result.Lookup) and the status header
 // otherwise, and either is unlisted when b's crawl failed. The region is
@@ -315,7 +228,7 @@ func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
 // symbol, is not built.
 func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 	fc := FileCond{Header: header, Region: b.Plain(b.Region(path, region))}
-	switch pa := PathArch(path); {
+	switch pa := kernel.PathArch(path); {
 	case pa != "" && pa != b.Arch:
 		fc.Status = StatusNotBuilt
 	case b.Kbuild == nil:
@@ -336,7 +249,7 @@ func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 // or nil with what b can tell without one: ArchNo when it does not build
 // the file, ArchMaybe when the file's condition there is unknown.
 func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, ArchVerdict) {
-	pa := PathArch(path)
+	pa := kernel.PathArch(path)
 	if pa != "" && pa != b.Arch {
 		return nil, ArchNo
 	}
@@ -431,7 +344,7 @@ func (f *FileArches) Add(b Build, region *kcond.Expr) {
 // those of them where its condition is unknown.
 func (f *FileArches) Lists() (arches, unknown []string) {
 	arches, unknown = []string{}, []string{}
-	for _, a := range LabelArches {
+	for _, a := range kernel.LabelArches {
 		switch f.Verdicts[a] {
 		case ArchMaybe:
 			unknown = append(unknown, a)
@@ -459,7 +372,7 @@ type ArchSummary struct {
 // Summarize combines the files of a change the way Combine does: sources
 // count, headers only when no source changed. The label covers the label
 // arches present at the files' revisions: generic when every one but
-// OptionalArch may build the code, the arch's name when only one does,
+// kernel.OptionalArch may build the code, the arch's name when only one does,
 // several otherwise; other when every counted path is under an
 // architecture outside the label set, none when no label arch builds it,
 // and "" when no file was analysed.
@@ -475,8 +388,8 @@ func Summarize(files []FileArches) ArchSummary {
 		if sources && f.Header {
 			continue
 		}
-		pa := PathArch(f.Path)
-		labelPath = labelPath || pa == "" || slices.Contains(LabelArches, pa)
+		pa := kernel.PathArch(f.Path)
+		labelPath = labelPath || pa == "" || slices.Contains(kernel.LabelArches, pa)
 		found = found || len(f.Present) > 0
 		if len(f.Present) == 0 {
 			s.Uncertain = true
@@ -495,7 +408,7 @@ func Summarize(files []FileArches) ArchSummary {
 		}
 	}
 	var in []string
-	for _, a := range LabelArches {
+	for _, a := range kernel.LabelArches {
 		if !yes[a] && !maybe[a] {
 			continue
 		}
@@ -517,7 +430,7 @@ func Summarize(files []FileArches) ArchSummary {
 		s.Label = "other"
 	case len(in) == 0:
 		s.Label = "none"
-	case !slices.ContainsFunc(LabelArches, func(a string) bool { return present[a] && a != OptionalArch && !yes[a] && !maybe[a] }):
+	case !slices.ContainsFunc(kernel.LabelArches, func(a string) bool { return present[a] && a != kernel.OptionalArch && !yes[a] && !maybe[a] }):
 		s.Label = "generic"
 	case len(in) == 1:
 		s.Label = in[0]
