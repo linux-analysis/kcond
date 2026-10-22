@@ -935,14 +935,9 @@ func dirConditions(roots map[string]*kcond.Expr, edges map[string][]edge, rootKb
 			terms = append(terms, c)
 		}
 		for _, e := range edges[d] {
-			pc, ok := conds[e.parent]
-			if !ok {
-				continue
+			if pc, ok := conds[e.parent]; ok {
+				terms = append(terms, kcond.And(pc, e.cond))
 			}
-			if !e.cond.IsConst(true) { // most #include lines are unconditional
-				pc = kcond.And(pc, e.cond)
-			}
-			terms = append(terms, pc)
 		}
 		if len(terms) == 0 {
 			return false
