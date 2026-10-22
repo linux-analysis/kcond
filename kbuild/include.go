@@ -34,21 +34,29 @@ type Includes struct {
 
 	// The builds of a tree share one Includes (see Options), so the
 	// #include lines of the tree, which find the includers of a header,
-	// are listed once.
-	mu sync.Mutex
-	// names lists, by the base name of an #include name, the .c, .S and
-	// .h files giving it; nil until a header is looked up.
-	names map[string][]string
-	// read holds the #include lines of each file, by path.
-	read map[string][]incLine
+	// are listed once; nil until a header is looked up.
+	mu     sync.Mutex
+	listed *incListing
 }
 
-// incLine is an #include line: the name it gives, whether it is quoted
-// ("name") rather than bracketed (<name>), and the condition of its line.
+// incListing is the #include lines of the .c, .S and .h files of a tree.
+type incListing struct {
+	// names lists, by the base name of an #include name, the files that
+	// may give it.
+	names map[string][]string
+	// read holds the #include lines of each file parsed, by path, and
+	// grepped the directive lines of each file not parsed yet.
+	read    map[string][]incLine
+	grepped map[string][]string
+}
+
+// incLine is an #include line: the name it gives, with its base name,
+// whether it is quoted ("name") rather than bracketed (<name>), and the
+// condition of its line.
 type incLine struct {
-	name   string
-	quoted bool
-	cond   *kcond.Expr
+	name, base string
+	quoted     bool
+	cond       *kcond.Expr
 }
 
 // GrepFS is a file system that lists the files containing a string, and
@@ -93,104 +101,132 @@ func incLines(data []byte, p string) []incLine {
 		if i < len(cpp) {
 			cond = cpp[i]
 		}
-		ds = append(ds, incLine{strings.Clone(m[2]), m[1] == `"`, cond}) // not a substring of the file
+		name := strings.Clone(m[2]) // not a substring of the file
+		ds = append(ds, incLine{name, path.Base(name), m[1] == `"`, cond})
 	}
 	return ds
 }
 
 // includers returns, by file, the #include lines of the .c, .S and .h
 // files of fsys that name the base name of one of headers, for targets to
-// resolve; the lines of the tree are listed at the first call.
+// resolve; the lines of the tree are listed at the first call, and those
+// of a file parsed at the first call that returns it.
 func (inc *Includes) includers(fsys fs.FS, headers []string) (map[string][]incLine, error) {
 	inc.mu.Lock()
 	defer inc.mu.Unlock()
-	if inc.names == nil {
-		names, read, err := listIncludes(fsys)
+	if inc.listed == nil {
+		l, err := listIncludes(fsys)
 		if err != nil {
 			return nil, err
 		}
-		inc.names, inc.read = names, read
+		inc.listed = l
 	}
 	out := map[string][]incLine{}
 	for _, h := range headers {
-		for _, f := range inc.names[path.Base(h)] {
-			out[f] = inc.read[f]
+		for _, f := range inc.listed.names[path.Base(h)] {
+			if _, ok := out[f]; ok {
+				continue
+			}
+			ls, err := inc.listed.lines(fsys, f)
+			if err != nil {
+				return nil, err
+			}
+			out[f] = ls
 		}
 	}
 	return out, nil
 }
 
 // listIncludes lists the #include lines of the .c, .S and .h files of
-// fsys, with the condition of each, by file, and by base name the files
-// giving each #include name. With Grep the directive lines of the tree
-// come from one GrepLines and are read as the file, since only directives
-// decide the conditions; #define is left out, as git grep takes minutes on
-// its millions of matches, so a header's guard gets its #define back after
-// a leading #ifndef, and a file with a continued directive line, or a line
-// leaving a comment open over lines the grep left out, is read whole.
-// Without Grep every file is read.
-func listIncludes(fsys fs.FS) (map[string][]string, map[string][]incLine, error) {
-	names, read := map[string][]string{}, map[string][]incLine{}
-	add := func(f string, ls []incLine) {
-		read[f] = ls
-		for _, l := range ls {
-			b := path.Base(l.name)
-			if n := names[b]; len(n) == 0 || n[len(n)-1] != f {
-				names[b] = append(n, f)
-			}
+// fsys: with Grep, the directive lines of the tree from one GrepLines, to
+// be parsed as each file is needed (see lines), and the files by the base
+// names their #include lines give; without, every file read and parsed.
+func listIncludes(fsys fs.FS) (*incListing, error) {
+	l := &incListing{names: map[string][]string{}, read: map[string][]incLine{}, grepped: map[string][]string{}}
+	name := func(f, n string) {
+		b := strings.Clone(path.Base(n)) // not a substring of the listing
+		if ns := l.names[b]; len(ns) == 0 || ns[len(ns)-1] != f {
+			l.names[b] = append(ns, f)
 		}
 	}
 	if g, ok := fsys.(GrepFS); ok {
 		lines, err := g.GrepLines([]string{"#if", "#el", "#endif", "#include", "# ", "#\t"}, "*.c", "*.S", "*.h")
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		for f, ls := range lines {
 			f := strings.Clone(f) // the names outlive the listing
-			if slices.ContainsFunc(ls, func(l string) bool {
-				_, open := kcond.StripComments(l, false)
-				return open || strings.HasSuffix(strings.TrimRight(l, " \t\r"), "\\") // as Lines continues it
-			}) {
-				data, err := fs.ReadFile(fsys, f)
-				if err != nil {
-					return nil, nil, err
-				}
-				add(f, incLines(data, f))
-				continue
-			}
-			// The guard is the first directive; comment lines the grep
-			// matched may come before it.
-			if i := slices.IndexFunc(ls, func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "#") }); i >= 0 && path.Ext(f) == ".h" {
-				if m := guardLine.FindStringSubmatch(ls[i]); m != nil {
-					ls = slices.Insert(slices.Clone(ls), i+1, "#define "+m[1])
+			l.grepped[f] = ls
+			for _, line := range ls {
+				// Out of the context of its file a line may be in a
+				// comment; parsing the file drops it.
+				if code, _ := kcond.StripComments(line, false); strings.Contains(code, "include") {
+					if m := includeLine.FindStringSubmatch(code); m != nil {
+						name(f, m[2])
+					}
 				}
 			}
-			// shortcut: a block comment opened on a line the grep left out,
-			// as a bare /*, is not seen, so the directives in it count: a
-			// commented-out #include adds an includer, a commented #else
-			// flips a branch, an unbalanced one makes the file
-			// unconditional. Four files at v7.3 comment out includes, none
-			// changing a condition; read a lookup's includers whole if one
-			// does.
-			add(f, incLines([]byte(strings.Join(ls, "\n")), f))
 		}
-	} else {
-		err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !slices.Contains([]string{".c", ".S", ".h"}, path.Ext(p)) {
-				return err
-			}
-			data, err := fs.ReadFile(fsys, p)
-			if err != nil {
-				return err
-			}
-			add(p, incLines(data, p))
-			return nil
-		})
-		if err != nil {
-			return nil, nil, err
-		}
+		return l, nil
 	}
-	return names, read, nil
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !slices.Contains([]string{".c", ".S", ".h"}, path.Ext(p)) {
+			return err
+		}
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		l.read[p] = incLines(data, p)
+		for _, d := range l.read[p] {
+			name(p, d.name)
+		}
+		return nil
+	})
+	return l, err
+}
+
+// lines returns the #include lines of file f, parsed at the first call
+// from its grepped directive lines read as the file, since only
+// directives decide the conditions. #define is not grepped, as git grep
+// takes minutes on its millions of matches, so a header's guard gets its
+// #define back after a leading #ifndef, and a file with a continued
+// directive line, or a line leaving a comment open over lines the grep
+// left out, is read whole.
+func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
+	if ls, ok := l.read[f]; ok {
+		return ls, nil
+	}
+	ls := l.grepped[f]
+	var ds []incLine
+	if slices.ContainsFunc(ls, func(line string) bool {
+		_, open := kcond.StripComments(line, false)
+		return open || strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\") // as Lines continues it
+	}) {
+		data, err := fs.ReadFile(fsys, f)
+		if err != nil {
+			return nil, err
+		}
+		ds = incLines(data, f)
+	} else {
+		// The guard is the first directive; comment lines the grep matched
+		// may come before it.
+		if i := slices.IndexFunc(ls, func(line string) bool { return strings.HasPrefix(strings.TrimSpace(line), "#") }); i >= 0 && path.Ext(f) == ".h" {
+			if m := guardLine.FindStringSubmatch(ls[i]); m != nil {
+				ls = slices.Insert(slices.Clone(ls), i+1, "#define "+m[1])
+			}
+		}
+		// shortcut: a block comment opened on a line the grep left out, as
+		// a bare /*, is not seen, so the directives in it count: a
+		// commented-out #include adds an includer, a commented #else flips
+		// a branch, an unbalanced one makes the file unconditional. Four
+		// files at v7.3 comment out includes, none changing a condition;
+		// read a lookup's includers whole if one does.
+		ds = incLines([]byte(strings.Join(ls, "\n")), f)
+	}
+	l.read[f] = ds
+	delete(l.grepped, f)
+	return ds, nil
 }
 
 // ScanIncludes finds the #include "file.c" and #include "file.S"

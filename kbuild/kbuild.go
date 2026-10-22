@@ -404,7 +404,7 @@ func (r *Result) header(p string) (*kcond.Expr, Status) {
 		}
 		for _, f := range slices.Sorted(maps.Keys(files)) {
 			for _, d := range files[f] {
-				if !bases[path.Base(d.name)] {
+				if !bases[d.base] {
 					continue
 				}
 				for _, t := range r.targets(f, d, level) {
@@ -710,14 +710,13 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	var scan sync.WaitGroup
 	var scanErr error
-	var names map[string][]string
-	var read map[string][]incLine
+	var listed *incListing
 	if r.Includes = opts.Includes; r.Includes == nil {
 		scan.Go(func() { r.Includes, scanErr = ScanIncludes(fsys) })
 		if slices.ContainsFunc(opts.Lookups, func(p string) bool { return path.Ext(p) == ".h" }) {
 			// A listing that fails is tried again, and reported, at the
 			// first lookup.
-			scan.Go(func() { names, read, _ = listIncludes(fsys) })
+			scan.Go(func() { listed, _ = listIncludes(fsys) })
 		}
 	}
 	if arch == "x86" || arch == "x86_64" {
@@ -859,8 +858,8 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	if scan.Wait(); scanErr != nil {
 		return nil, scanErr
 	}
-	if names != nil {
-		r.Includes.names, r.Includes.read = names, read
+	if listed != nil {
+		r.Includes.listed = listed
 	}
 	r.include(fsys)
 	r.subdirFlags = nil

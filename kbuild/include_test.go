@@ -211,13 +211,18 @@ func TestListIncludesGrep(t *testing.T) {
 		"d.h": "#ifndef _D_H /* guard */\n#define _D_H\n#include <d1.h>\n#endif\n",
 		"e.c": "#if defined(CONFIG_A) || \\  \n    defined(CONFIG_B)\n#include <e1.h>\n#endif\n",
 	}
-	_, read, err := listIncludes(grepTree{FS: tree(files)})
+	fsys := grepTree{FS: tree(files)}
+	list, err := listIncludes(fsys)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for p, data := range files {
+		read, err := list.lines(fsys, p)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var got, want []string
-		for _, l := range read[p] {
+		for _, l := range read {
 			got = append(got, l.name+" "+l.cond.String())
 		}
 		for _, l := range incLines([]byte(data), p) {
@@ -413,7 +418,7 @@ func TestHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if listed, want := r.Includes.names != nil, lookups != nil && lookups[0] != "drivers/foo/a.c"; listed != want {
+		if listed, want := r.Includes.listed != nil, lookups != nil && lookups[0] != "drivers/foo/a.c"; listed != want {
 			t.Errorf("Crawl with Lookups %q listed the #include lines: %v, want %v", lookups, listed, want)
 		}
 	}
