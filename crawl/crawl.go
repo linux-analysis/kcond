@@ -39,9 +39,6 @@ type Result struct {
 	// primary one at Rev, by name.
 	Builds map[string]builds.FileCond
 	Arches builds.FileArches
-	// Requires maps the symbols of Cond to the ones they require in the
-	// primary build's Kconfig at Rev.
-	Requires map[string][]string
 }
 
 // Options tune a Resolve.
@@ -200,17 +197,6 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 				continue
 			}
 			r.Cond = fc
-			if b.Values == nil {
-				continue
-			}
-			syms := f.Region.Symbols()
-			if r.Cond.Kbuild != nil {
-				syms = append(syms, r.Cond.Kbuild.Symbols()...)
-			}
-			r.Requires = map[string][]string{}
-			for _, s := range syms {
-				r.Requires[s] = b.Values.Requires(s)
-			}
 		}
 		return ctx.Err()
 	}
