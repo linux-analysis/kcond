@@ -7,18 +7,25 @@ import (
 	"github.com/linux-analysis/kcond/kbuild"
 )
 
-// File statuses of a crawl.
+// Status tells how a build relates to a changed file.
+type Status uint8
+
+// The statuses of a file; the zero Status is that of a file not looked up.
 const (
-	StatusBuilt    = "built"     // listed by a Makefile or #included by a listed source; Kbuild holds
-	StatusUnlisted = "unlisted"  // neither listed by a Makefile the crawl follows nor #included by a listed source
-	StatusNotBuilt = "not built" // another arch, the other word size, or a directory never entered outside arch/
-	StatusHeader   = "header"
-	StatusMissing  = "missing" // not found at any revision tried
+	StatusBuilt    Status = iota + 1 // listed by a Makefile or #included by a listed source; Kbuild holds
+	StatusUnlisted                   // neither listed by a Makefile the crawl follows nor #included by a listed source
+	StatusNotBuilt                   // another arch, the other word size, or a directory never entered outside arch/
+	StatusHeader                     // a header no listed file includes
+	StatusMissing                    // not found at any revision tried
 )
+
+func (s Status) String() string {
+	return [...]string{"", "built", "unlisted", "not built", "header", "missing"}[s]
+}
 
 // KbuildStatus is the status of a source file in a crawl, with its Kbuild
 // condition when it is built.
-func KbuildStatus(res *kbuild.Result, path string) (string, *kcond.Expr) {
+func KbuildStatus(res *kbuild.Result, path string) (Status, *kcond.Expr) {
 	e, st := res.Lookup(path)
 	switch st {
 	case kbuild.Built:
@@ -32,8 +39,8 @@ func KbuildStatus(res *kbuild.Result, path string) (string, *kcond.Expr) {
 // FileCond is a changed file with its conditions.
 type FileCond struct {
 	Header bool
-	Status string
-	Kbuild *kcond.Expr // set when Status is built
+	Status Status
+	Kbuild *kcond.Expr // set when Status is StatusBuilt
 	Region *kcond.Expr
 }
 

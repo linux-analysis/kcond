@@ -468,7 +468,7 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 			f, _ := kernel.FileOf(q.path)
 			fc := builds.BuildCond(q.path, f.Header, regions[i], b)
 			e, unknown := builds.Combine([]builds.FileCond{fc})
-			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status, Kbuild: condText(fc.Kbuild),
+			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status.String(), Kbuild: condText(fc.Kbuild),
 				Region: fc.Region.String(), Condition: condText(e)}
 			if o.cfg != nil {
 				r.Verdict = change.VerdictName(change.Verdict(e, unknown, o.cfg.Config))
@@ -644,13 +644,13 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 				}
 			}
 			c := changed{Path: ch.Path, Header: ch.Header, Region: region.String(), Functions: ch.Functions, Rev: res.Rev,
-				Status: fc.Status, Kbuild: condText(fc.Kbuild)}
+				Status: fc.Status.String(), Kbuild: condText(fc.Kbuild)}
 			c.Arches, c.Unknown = res.Arches.Lists()
 			for name, b := range res.Builds {
 				if c.Builds == nil {
 					c.Builds = map[string]string{}
 				}
-				c.Builds[name] = b.Status
+				c.Builds[name] = b.Status.String()
 				if b.Kbuild != nil {
 					c.Builds[name] += " " + b.Kbuild.String()
 				}
@@ -971,7 +971,7 @@ func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
 		if e.IsConst(false) {
 			continue // #included only where the preprocessor drops it
 		}
-		r := fileCond{Path: p, Build: b.Name, Status: builds.StatusBuilt, Kbuild: e.String(), Region: "true", Condition: e.String()}
+		r := fileCond{Path: p, Build: b.Name, Status: builds.StatusBuilt.String(), Kbuild: e.String(), Region: "true", Condition: e.String()}
 		if o.cfg != nil {
 			// An opaque atom leaves the file possible, and scoping an
 			// analysis had better include a file than miss one.

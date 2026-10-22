@@ -164,7 +164,7 @@ func TestBuildCond(t *testing.T) {
 	err := Each(archTree(), nil, nil, func(b Build) error {
 		for _, p := range paths {
 			fc := BuildCond(p, strings.HasSuffix(p, ".h"), region, b)
-			s := fc.Status
+			s := fc.Status.String()
 			if fc.Kbuild != nil {
 				s += " " + fc.Kbuild.String()
 			}

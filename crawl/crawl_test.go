@@ -83,7 +83,11 @@ func TestResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, want := range []struct{ rev, status, kbuild string }{
+	for i, want := range []struct {
+		rev    string
+		status builds.Status
+		kbuild string
+	}{
 		{c2, builds.StatusBuilt, "CONFIG_A"}, {c2, builds.StatusBuilt, "true"}, {"", builds.StatusMissing, ""},
 		{"", builds.StatusHeader, ""}, {"", builds.StatusNotBuilt, ""}, {c1, builds.StatusBuilt, "CONFIG_A"},
 	} {
@@ -157,7 +161,7 @@ func TestResolveSplitX86(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, want := range []string{"built CONFIG_MTRR", "built CONFIG_MTRR"} {
-		s := got[i].Cond.Status
+		s := got[i].Cond.Status.String()
 		if got[i].Cond.Kbuild != nil {
 			s += " " + got[i].Cond.Kbuild.String()
 		}
