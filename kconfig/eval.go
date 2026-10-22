@@ -83,6 +83,8 @@ type Options struct {
 type Values struct {
 	selectsOnce sync.Once
 	selects     map[string][]selection // by selecting symbol, see Selects
+	requiresMu  sync.Mutex
+	requires    map[string][]string // by bare name, see Requires
 
 	t       *Tree
 	sets    map[string]Set
@@ -669,49 +671,38 @@ func (v *Values) Possible(e *kcond.Expr) bool {
 // their own dependencies. Only plain symbols ANDed in a dependency count,
 // including those the tree never defines, which keep it n.
 // A select that ignores unmet dependencies is a Kconfig warning and does
-// not count either.
+// not count either. Each symbol's are computed once; Requires is safe for
+// concurrent use.
 func (v *Values) Requires(name string) []string {
-	var out []string
-	for s := range v.requires(strings.TrimPrefix(name, "CONFIG_"), map[string]map[string]bool{}) {
-		out = append(out, "CONFIG_"+s)
+	name = strings.TrimPrefix(name, "CONFIG_")
+	v.requiresMu.Lock()
+	defer v.requiresMu.Unlock()
+	out, ok := v.requires[name]
+	if !ok {
+		out = configNames(v.requiresOf(name, map[string]map[string]bool{}))
+		if v.requires == nil {
+			v.requires = map[string][]string{}
+		}
+		v.requires[name] = out
 	}
-	slices.Sort(out)
-	return out
+	return slices.Clone(out) // the caller may change it
 }
 
 // DependsOn returns the bool and tristate symbols, as CONFIG_ names, that
 // every definition of the symbol name (with or without CONFIG_) depends on
 // directly: Requires without the dependencies of those.
 func (v *Values) DependsOn(name string) []string {
-	name = strings.TrimPrefix(name, "CONFIG_")
-	s := v.t.Syms[name]
+	s := v.t.Syms[strings.TrimPrefix(name, "CONFIG_")]
 	if s == nil || s.Choice != nil {
 		return nil
 	}
-	var common map[string]bool
-	for i, dep := range s.DirDep {
-		cur := map[string]bool{}
-		for _, d := range v.conjuncts(dep) {
-			cur[d] = true
-		}
-		if i == 0 {
-			common = cur
-		} else {
-			maps.DeleteFunc(common, func(k string, _ bool) bool { return !cur[k] })
-		}
-	}
-	delete(common, name)
-	var out []string
-	for d := range common {
-		out = append(out, "CONFIG_"+d)
-	}
-	slices.Sort(out)
-	return out
+	return configNames(v.everyDefinition(s, nil))
 }
 
-// requires is Requires on bare names. memo holds the sets computed so far,
-// and nil for the symbols being computed, where a dependency cycle stops.
-func (v *Values) requires(name string, memo map[string]map[string]bool) map[string]bool {
+// requiresOf is Requires on bare names. memo holds the sets computed so
+// far, and nil for the symbols being computed, where a dependency cycle
+// stops.
+func (v *Values) requiresOf(name string, memo map[string]map[string]bool) map[string]bool {
 	if r, ok := memo[name]; ok {
 		return r
 	}
@@ -720,13 +711,26 @@ func (v *Values) requires(name string, memo map[string]map[string]bool) map[stri
 	if s == nil || s.Choice != nil {
 		return nil
 	}
+	out := v.everyDefinition(s, func(d string, cur map[string]bool) {
+		for r := range v.requiresOf(d, memo) {
+			cur[r] = true
+		}
+	})
+	memo[name] = out
+	return out
+}
+
+// everyDefinition returns the symbols every definition of s gives: each
+// one ANDed at the top of the definition's dependencies, with what expand,
+// when not nil, adds for it; s itself is left out.
+func (v *Values) everyDefinition(s *Symbol, expand func(d string, cur map[string]bool)) map[string]bool {
 	var out map[string]bool
 	for i, dep := range s.DirDep {
 		cur := map[string]bool{}
 		for _, d := range v.conjuncts(dep) {
 			cur[d] = true
-			for r := range v.requires(d, memo) {
-				cur[r] = true
+			if expand != nil {
+				expand(d, cur)
 			}
 		}
 		if i == 0 {
@@ -735,8 +739,17 @@ func (v *Values) requires(name string, memo map[string]map[string]bool) map[stri
 			maps.DeleteFunc(out, func(k string, _ bool) bool { return !cur[k] })
 		}
 	}
-	delete(out, name)
-	memo[name] = out
+	delete(out, s.Name)
+	return out
+}
+
+// configNames returns the symbols of set as CONFIG_ names, sorted.
+func configNames(set map[string]bool) []string {
+	var out []string
+	for d := range set {
+		out = append(out, "CONFIG_"+d)
+	}
+	slices.Sort(out)
 	return out
 }
 
