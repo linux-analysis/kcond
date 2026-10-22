@@ -29,6 +29,9 @@ type FileChange struct {
 	// deleted lines in the old file, added lines in the new one. It is true
 	// when a file cannot be analyzed.
 	Region *kcond.Expr
+	// Terms are the distinct conditions of the changed code lines, whose
+	// OR Region is; none when Code is false.
+	Terms []*kcond.Expr
 	// Functions are the hunk headers git shows, normally the functions.
 	Functions []string
 	// Code is false when no hunk changes code: every changed line is a
@@ -86,94 +89,109 @@ func OutsideBuild(p string) bool {
 func Changes(b Blobs, hash, diff string) []FileChange {
 	var out []FileChange
 	for _, fd := range unidiff.Files(diff) {
-		p := fd.OldPath
-		if p == "" {
-			p = fd.NewPath
-		}
-		ok, header := Kernel(p)
-		if !ok || len(fd.Hunks) == 0 {
-			continue
-		}
-		var add int
-		for _, h := range fd.Hunks {
-			add += len(h.Added)
-		}
-		olds := map[int]*kcond.Source{} // by parent
-		var newSrc *kcond.Source
-		var bad bool
-		image := func(rev, file string) *kcond.Source {
-			data, found, err := b.Get(rev + ":" + file)
-			if err != nil || !found {
-				bad = true
-				return nil
-			}
-			src, err := kcond.Analyze(data, kbuild.CodeOf(file))
-			if err != nil {
-				bad = true
-				return nil
-			}
-			return src
-		}
-		for _, h := range fd.Hunks {
-			if _, read := olds[h.Parent]; !read && len(h.Deleted) > 0 && fd.OldPath != "" {
-				rev := hash + "^"
-				if h.Parent > 0 {
-					rev += strconv.Itoa(h.Parent + 1)
-				}
-				olds[h.Parent] = image(rev, fd.OldPath)
-			}
-		}
-		if add > 0 && fd.NewPath != "" {
-			newSrc = image(hash, fd.NewPath)
-		}
-		// Path and Functions are cloned: as substrings they would keep the
-		// whole diff alive for as long as the change.
-		fc := FileChange{Path: strings.Clone(p), Header: header, Region: kcond.Const(false)}
-		seen := map[string]bool{}
-		for _, h := range fd.Hunks {
-			if h.Func != "" && !seen[h.Func] {
-				seen[h.Func] = true
-				fc.Functions = append(fc.Functions, strings.Clone(h.Func))
-			}
-		}
-		if bad {
-			fc.Region, fc.Code = kcond.Const(true), true
+		if fc, ok := Change(b, hash, fd); ok {
 			out = append(out, fc)
-			continue
 		}
-		var terms []*kcond.Expr
-		lines := func(src *kcond.Source, nums []int) {
-			for _, n := range nums {
-				if src != nil && n >= 1 && n <= len(src.Text) && src.Text[n-1] != "" {
-					terms = append(terms, src.Cond(n-1))
-				}
-			}
-		}
-		// code lists the code of the n lines of src from line start, the
-		// context lines of a hunk included.
-		code := func(src *kcond.Source, start, n int) (texts []string) {
-			for i := max(start, 1); src != nil && i < start+n && i <= len(src.Text); i++ {
-				if src.Text[i-1] != "" {
-					texts = append(texts, src.Text[i-1])
-				}
-			}
-			return texts
-		}
-		for _, h := range fd.Hunks {
-			// A hunk whose code reads the same before and after only moves
-			// comments or blank lines.
-			oldSrc := olds[h.Parent]
-			if slices.Equal(code(oldSrc, h.OldStart, h.OldLines), code(newSrc, h.NewStart, h.NewLines)) {
-				continue
-			}
-			lines(oldSrc, h.Deleted)
-			lines(newSrc, h.Added)
-		}
-		fc.Code = len(terms) > 0
-		fc.Region = kcond.Or(terms...)
-		out = append(out, fc)
 	}
 	return out
+}
+
+// Change reads what the commit hash changes in one file of its diff, as
+// Changes does for every file; ok is false for a file that is not a kernel
+// source or header, or that no hunk changes.
+func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) {
+	p := fd.OldPath
+	if p == "" {
+		p = fd.NewPath
+	}
+	ok, header := Kernel(p)
+	if !ok || len(fd.Hunks) == 0 {
+		return FileChange{}, false
+	}
+	var add int
+	for _, h := range fd.Hunks {
+		add += len(h.Added)
+	}
+	olds := map[int]*kcond.Source{} // by parent
+	var newSrc *kcond.Source
+	var bad bool
+	image := func(rev, file string) *kcond.Source {
+		data, found, err := b.Get(rev + ":" + file)
+		if err != nil || !found {
+			bad = true
+			return nil
+		}
+		src, err := kcond.Analyze(data, kbuild.CodeOf(file))
+		if err != nil {
+			bad = true
+			return nil
+		}
+		return src
+	}
+	for _, h := range fd.Hunks {
+		if _, read := olds[h.Parent]; !read && len(h.Deleted) > 0 && fd.OldPath != "" {
+			rev := hash + "^"
+			if h.Parent > 0 {
+				rev += strconv.Itoa(h.Parent + 1)
+			}
+			olds[h.Parent] = image(rev, fd.OldPath)
+		}
+	}
+	if add > 0 && fd.NewPath != "" {
+		newSrc = image(hash, fd.NewPath)
+	}
+	// Path and Functions are cloned: as substrings they would keep the
+	// whole diff alive for as long as the change.
+	fc = FileChange{Path: strings.Clone(p), Header: header, Region: kcond.Const(false)}
+	seen := map[string]bool{}
+	for _, h := range fd.Hunks {
+		if h.Func != "" && !seen[h.Func] {
+			seen[h.Func] = true
+			fc.Functions = append(fc.Functions, strings.Clone(h.Func))
+		}
+	}
+	if bad {
+		fc.Region, fc.Terms, fc.Code = kcond.Const(true), []*kcond.Expr{kcond.Const(true)}, true
+		return fc, true
+	}
+	var terms []*kcond.Expr
+	lines := func(src *kcond.Source, nums []int) {
+		for _, n := range nums {
+			if src != nil && n >= 1 && n <= len(src.Text) && src.Text[n-1] != "" {
+				terms = append(terms, src.Cond(n-1))
+			}
+		}
+	}
+	// code lists the code of the n lines of src from line start, the
+	// context lines of a hunk included.
+	code := func(src *kcond.Source, start, n int) (texts []string) {
+		for i := max(start, 1); src != nil && i < start+n && i <= len(src.Text); i++ {
+			if src.Text[i-1] != "" {
+				texts = append(texts, src.Text[i-1])
+			}
+		}
+		return texts
+	}
+	for _, h := range fd.Hunks {
+		// A hunk whose code reads the same before and after only moves
+		// comments or blank lines.
+		oldSrc := olds[h.Parent]
+		if slices.Equal(code(oldSrc, h.OldStart, h.OldLines), code(newSrc, h.NewStart, h.NewLines)) {
+			continue
+		}
+		lines(oldSrc, h.Deleted)
+		lines(newSrc, h.Added)
+	}
+	fc.Code = len(terms) > 0
+	fc.Region = kcond.Or(terms...)
+	seen = map[string]bool{}
+	for _, t := range terms {
+		if !seen[t.String()] {
+			seen[t.String()] = true
+			fc.Terms = append(fc.Terms, t)
+		}
+	}
+	return fc, true
 }
 
 // Short drops from every AND of e the plain CONFIG_X terms that another

@@ -113,10 +113,15 @@ func TestChanges(t *testing.T) {
 		len(foo.Functions) != 1 || foo.Functions[0] != "static int foo_setup(void)" {
 		t.Errorf("foo.c = %+v (region %s)", foo, foo.Region)
 	}
+	// The lines' conditions, each once: the deleted lines' then the added
+	// lines', which repeat them.
+	if len(foo.Terms) != 2 || foo.Terms[0].String() != "CONFIG_FOO_DEBUG=y" || foo.Terms[1].String() != "CONFIG_FOO_EXTRA" {
+		t.Errorf("foo.c terms = %v, want CONFIG_FOO_DEBUG=y and CONFIG_FOO_EXTRA", foo.Terms)
+	}
 	if c := got[1]; c.Path != "drivers/foo/comment.c" || c.Code {
 		t.Errorf("comment.c = %+v, want no code change", c)
 	}
-	if c := got[2]; c.Path != "drivers/foo/moved.c" || c.Code || c.Region.String() != "false" {
+	if c := got[2]; c.Path != "drivers/foo/moved.c" || c.Code || c.Region.String() != "false" || len(c.Terms) != 0 {
 		t.Errorf("moved.c = %+v, want no code change", c)
 	}
 	// A line moved past other code is a code change.
