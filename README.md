@@ -200,6 +200,7 @@ CONFIG_BONDING`; errors exit 2. Every command prints JSON with `--json`.
 ```go
 import (
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/analysis"
 	"github.com/linux-analysis/kcond/builds"
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
@@ -208,18 +209,33 @@ import (
 
 tree, err := gitfs.Open(ctx, dir, "v6.12")  // an fs.FS; gitfs.WorkTree reads a checkout
 b, ok := builds.NewSession(tree, nil).Build("x86_64") // the Makefile crawl and the Kconfig analysis
-fc := b.Eval(kernel.File{Path: path}, kcond.Const(true))   // Status, Kbuild, Region
+f, _ := kernel.FileOf(path)                  // a kernel source or header
+fc := b.Eval(f, kcond.Const(true))           // Status, Kbuild, Region
+v := b.MayBuild(fc)                          // whether x86_64 may build it
 e, err := kcond.Parse("CONFIG_A && !CONFIG_B")
-f, err := dotconfig.Read(data)               // Config, Version, Build
-v := e.Eval(f.Config)                        // kcond.True, False or Unknown
+c, err := dotconfig.Read(data)               // Config, Version, Build
+t := e.Eval(c.Config)                        // kcond.True, False or Unknown
+rs, err := analysis.Diff(ctx, dir, []string{"v6.12.1..v6.12.2"}, analysis.Options{Config: c.Config})
 ```
 
-`Session.Builds` walks every build of a tree; `change.Changes` reads the
-files and regions a commit's diff touches, `builds.Combine` and
-`builds.Summarize` turn them into one condition and an architecture
-label, and `analysis.Resolve` does that for many files across revisions,
-crawling each revision once. `kconfig.Parse` and `kconfig.Analyze` give
-the values each symbol can take.
+The packages build on one another:
+
+- `kcond` is the algebra of conditions, `source` reads the condition of
+  each line of a C or Rust file, `kernel` holds what kcond knows of the
+  layout of a kernel tree: its architectures and builds, which files are
+  kernel sources and headers and which architecture a path belongs to.
+- `kconfig` reads a Kconfig tree; its `Theory` says which conditions a
+  build's Kconfig allows, always holds or implies. `kbuild` crawls the
+  Makefiles of one architecture and finds where a file, header or
+  source, is compiled.
+- `builds` reads a tree as each architecture builds it: a `Session` gives
+  the builds, `Build.Eval` a file's condition in one, `Counted` the lines
+  of a file that count in a change, `Combine` and `Summarize` the
+  condition and the arch label of a change.
+- `change` reads what a commit changes in each file, and `analysis` the
+  commits themselves: `Walk` lists them, `Resolve` crawls each revision
+  once for all the files that need it, and `Diff` and `Search` answer as
+  the commands of the same names do.
 
 ## Development
 
