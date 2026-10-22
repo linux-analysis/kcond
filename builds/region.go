@@ -6,6 +6,7 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/source"
 )
 
 // pageSize is a page size an architecture may have, with the Kconfig
@@ -241,7 +242,7 @@ func negated(e *kcond.Expr) bool {
 // architecture gives.
 func (b Build) pageSize(region *kcond.Expr) *kcond.Expr {
 	return kcond.Subst(region, func(atom string) *kcond.Expr {
-		holds, ok := kcond.PageSizeHolds(atom, 4<<10)
+		holds, ok := source.PageSizeHolds(atom, 4<<10)
 		if !ok {
 			return nil
 		}
@@ -251,7 +252,7 @@ func (b Build) pageSize(region *kcond.Expr) *kcond.Expr {
 		}
 		var terms []*kcond.Expr
 		for _, s := range sizes {
-			if holds, _ := kcond.PageSizeHolds(atom, s.bytes); holds {
+			if holds, _ := source.PageSizeHolds(atom, s.bytes); holds {
 				terms = append(terms, kcond.Var(s.symbol, kcond.Enabled))
 			}
 		}

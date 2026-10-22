@@ -1,4 +1,4 @@
-package kcond
+package source
 
 import (
 	"slices"

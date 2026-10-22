@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/source"
 )
 
 // Include is an #include directive that names a .c or .S file, or a Rust
@@ -84,12 +85,12 @@ var (
 func incLines(data []byte, p string) []incLine {
 	code := CodeOf(p)
 	code.KeepAssembly = true
-	cpp, _ := kcond.Lines(data, code)
+	cpp, _ := source.Lines(data, code)
 	var ds []incLine
 	inComment := false
 	for i, line := range strings.Split(string(data), "\n") {
 		var code string
-		code, inComment = kcond.StripComments(line, inComment)
+		code, inComment = source.StripComments(line, inComment)
 		if !strings.Contains(code, "include") {
 			continue
 		}
@@ -160,7 +161,7 @@ func listIncludes(fsys fs.FS) (*incListing, error) {
 			for _, line := range ls {
 				// Out of the context of its file a line may be in a
 				// comment; parsing the file drops it.
-				if code, _ := kcond.StripComments(line, false); strings.Contains(code, "include") {
+				if code, _ := source.StripComments(line, false); strings.Contains(code, "include") {
 					if m := includeLine.FindStringSubmatch(code); m != nil {
 						name(f, m[2])
 					}
@@ -200,7 +201,7 @@ func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 	ls := l.grepped[f]
 	var ds []incLine
 	if slices.ContainsFunc(ls, func(line string) bool {
-		_, open := kcond.StripComments(line, false)
+		_, open := source.StripComments(line, false)
 		return open || strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\") // as Lines continues it
 	}) {
 		data, err := fs.ReadFile(fsys, f)
@@ -340,7 +341,7 @@ func rustModules(src string) []rustMod {
 			mod := rustMod{name: m[1], cond: kcond.Const(true)}
 			for _, a := range attrs {
 				if p, ok := strings.CutPrefix(a, "cfg("); ok && strings.HasSuffix(p, ")") {
-					mod.cond = kcond.And(mod.cond, kcond.RustCfg(p[:len(p)-1]))
+					mod.cond = kcond.And(mod.cond, source.RustCfg(p[:len(p)-1]))
 				} else if v, ok := strings.CutPrefix(a, "path"); ok {
 					v = strings.TrimSpace(v)
 					if v, ok = strings.CutPrefix(v, "="); ok {

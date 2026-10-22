@@ -11,6 +11,7 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/source"
 	"github.com/linux-analysis/kcond/unidiff"
 )
 
@@ -112,16 +113,16 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	for _, h := range fd.Hunks {
 		add += len(h.Added)
 	}
-	olds := map[int]*kcond.Source{} // by parent
-	var newSrc *kcond.Source
+	olds := map[int]*source.Source{} // by parent
+	var newSrc *source.Source
 	var bad bool
-	image := func(rev, file string) *kcond.Source {
+	image := func(rev, file string) *source.Source {
 		data, found, err := b.Get(rev + ":" + file)
 		if err != nil || !found {
 			bad = true
 			return nil
 		}
-		src, err := kcond.Analyze(data, kbuild.CodeOf(file))
+		src, err := source.Analyze(data, kbuild.CodeOf(file))
 		if err != nil {
 			bad = true
 			return nil
@@ -155,7 +156,7 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 		return fc, true
 	}
 	var terms []*kcond.Expr
-	lines := func(src *kcond.Source, nums []int) {
+	lines := func(src *source.Source, nums []int) {
 		for _, n := range nums {
 			if src != nil && n >= 1 && n <= len(src.Text) && src.Text[n-1] != "" {
 				terms = append(terms, src.Cond(n-1))
@@ -164,7 +165,7 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	}
 	// code lists the code of the n lines of src from line start, the
 	// context lines of a hunk included.
-	code := func(src *kcond.Source, start, n int) (texts []string) {
+	code := func(src *source.Source, start, n int) (texts []string) {
 		for i := max(start, 1); src != nil && i < start+n && i <= len(src.Text); i++ {
 			if src.Text[i-1] != "" {
 				texts = append(texts, src.Text[i-1])

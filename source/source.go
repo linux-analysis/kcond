@@ -1,21 +1,27 @@
-package kcond
+// Package source reads under which condition each line of a kernel
+// source is compiled: the C preprocessor regions, the C statements that
+// test Kconfig symbols with IS_ENABLED() and the like, and the #[cfg]
+// attributes of Rust.
+package source
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/linux-analysis/kcond"
 )
 
 // Source describes the lines of a C file: Cpp[i], Guard[i] and Text[i]
 // belong to line i+1.
 type Source struct {
 	// Cpp is the preprocessor condition of each line (see Lines).
-	Cpp []*Expr
+	Cpp []*kcond.Expr
 	// Guard is the condition of the C if statements around each line that
 	// test Kconfig symbols with IS_ENABLED(), IS_BUILTIN(), IS_MODULE(),
 	// IS_REACHABLE() or config_enabled(): a then branch gets the
 	// condition, an else branch its negation. A line holding tokens from
 	// several branches gets the OR of their conditions.
-	Guard []*Expr
+	Guard []*kcond.Expr
 	// Text is the code of a line with its comments stripped and its
 	// whitespace outside literals collapsed; it is empty for comment and
 	// blank lines.
@@ -42,30 +48,30 @@ func Analyze(src []byte, code Code) (*Source, error) {
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	s := &Source{Cpp: cpp, Guard: make([]*Expr, len(lines)), Text: make([]string, len(lines))}
+	s := &Source{Cpp: cpp, Guard: make([]*kcond.Expr, len(lines)), Text: make([]string, len(lines))}
 	toks := tokenize(lines, cpp, s.Text)
 	conds, err := guards(toks)
 	for i := range s.Guard {
-		s.Guard[i] = Const(true)
+		s.Guard[i] = kcond.Const(true)
 	}
 	if err != nil {
 		s.GuardErr = err
 		return s, nil
 	}
 	// A line is reached when any of its tokens is.
-	perLine := map[int][]*Expr{}
+	perLine := map[int][]*kcond.Expr{}
 	for i, t := range toks {
 		perLine[t.line] = append(perLine[t.line], conds[i])
 	}
 	for l, cs := range perLine {
-		s.Guard[l] = Or(cs...)
+		s.Guard[l] = kcond.Or(cs...)
 	}
 	return s, nil
 }
 
 // Cond is the condition under which the code on line index i (0-based) is
 // compiled and not discarded by a guard.
-func (s *Source) Cond(i int) *Expr { return And(s.Cpp[i], s.Guard[i]) }
+func (s *Source) Cond(i int) *kcond.Expr { return kcond.And(s.Cpp[i], s.Guard[i]) }
 
 // ctoken is a C token and the 0-based line it starts on.
 type ctoken struct {
@@ -80,7 +86,7 @@ var cPunct = []string{"<<=", ">>=", "...", "->", "++", "--", "&&", "||", "==", "
 // character literals (kept as one token), preprocessor directives and lines
 // in regions the preprocessor always drops are skipped. It stores in text
 // each line's code with comments stripped and whitespace collapsed.
-func tokenize(lines []string, cpp []*Expr, text []string) []ctoken {
+func tokenize(lines []string, cpp []*kcond.Expr, text []string) []ctoken {
 	var toks []ctoken
 	inComment, directive := false, false
 	for li, line := range lines {
@@ -173,8 +179,8 @@ func lexLine(line string, li int) []ctoken {
 }
 
 // guards returns the guard condition of each token.
-func guards(toks []ctoken) ([]*Expr, error) {
-	g := &gparser{toks: toks, conds: make([]*Expr, len(toks)), cur: Const(true)}
+func guards(toks []ctoken) ([]*kcond.Expr, error) {
+	g := &gparser{toks: toks, conds: make([]*kcond.Expr, len(toks)), cur: kcond.Const(true)}
 	for g.pos < len(toks) {
 		if err := g.statement(); err != nil {
 			return nil, err
@@ -187,9 +193,9 @@ func guards(toks []ctoken) ([]*Expr, error) {
 // labels and expression statements. It knows nothing else about C.
 type gparser struct {
 	toks  []ctoken
-	conds []*Expr
+	conds []*kcond.Expr
 	pos   int
-	cur   *Expr
+	cur   *kcond.Expr
 }
 
 func (g *gparser) peek() string {
@@ -373,7 +379,7 @@ func (g *gparser) ifStatement() error {
 	guarded := len(cond.Symbols()) > 0
 	outer := g.cur
 	if guarded {
-		g.cur = And(outer, cond)
+		g.cur = kcond.And(outer, cond)
 	}
 	if err := g.statement(); err != nil {
 		return err
@@ -384,7 +390,7 @@ func (g *gparser) ifStatement() error {
 	}
 	g.take()
 	if guarded {
-		g.cur = And(outer, Not(cond))
+		g.cur = kcond.And(outer, kcond.Not(cond))
 	}
 	err := g.statement()
 	g.cur = outer
@@ -394,11 +400,11 @@ func (g *gparser) ifStatement() error {
 // guardCond converts the tokens of an if condition: operands joined by
 // &&, || and ! that are guard macros on CONFIG_ symbols become variables,
 // any other operand an opaque atom named by its tokens.
-func guardCond(toks []string) *Expr {
+func guardCond(toks []string) *kcond.Expr {
 	p := &guardParser{toks: toks}
 	e := p.or()
 	if p.pos < len(toks) {
-		return Var(strings.Join(toks, " "), Enabled)
+		return kcond.Var(strings.Join(toks, " "), kcond.Enabled)
 	}
 	return e
 }
@@ -408,36 +414,36 @@ type guardParser struct {
 	pos  int
 }
 
-func (p *guardParser) or() *Expr {
-	terms := []*Expr{p.and()}
+func (p *guardParser) or() *kcond.Expr {
+	terms := []*kcond.Expr{p.and()}
 	for p.pos < len(p.toks) && p.toks[p.pos] == "||" {
 		p.pos++
 		terms = append(terms, p.and())
 	}
-	return Or(terms...)
+	return kcond.Or(terms...)
 }
 
-func (p *guardParser) and() *Expr {
-	terms := []*Expr{p.operand()}
+func (p *guardParser) and() *kcond.Expr {
+	terms := []*kcond.Expr{p.operand()}
 	for p.pos < len(p.toks) && p.toks[p.pos] == "&&" {
 		p.pos++
 		terms = append(terms, p.operand())
 	}
-	return And(terms...)
+	return kcond.And(terms...)
 }
 
-var guardMacros = map[string]State{"IS_ENABLED": Enabled, "IS_BUILTIN": Builtin, "IS_MODULE": Module}
+var guardMacros = map[string]kcond.State{"IS_ENABLED": kcond.Enabled, "IS_BUILTIN": kcond.Builtin, "IS_MODULE": kcond.Module}
 
 // macroCall converts a macro applied to a CONFIG_ symbol, such as
 // IS_ENABLED(CONFIG_X); ok is false for macros that test no option.
 // IS_REACHABLE(CONFIG_X) holds for X=y, and for X=m only in code compiled
 // into a module, where MODULE is defined.
-func macroCall(name, sym string) (e *Expr, ok bool) {
+func macroCall(name, sym string) (e *kcond.Expr, ok bool) {
 	if st, ok := guardMacros[name]; ok {
-		return Var(sym, st), true
+		return kcond.Var(sym, st), true
 	}
 	if name == "IS_REACHABLE" {
-		return Or(Var(sym, Builtin), And(Var(sym, Module), defined("MODULE"))), true
+		return kcond.Or(kcond.Var(sym, kcond.Builtin), kcond.And(kcond.Var(sym, kcond.Module), defined("MODULE"))), true
 	}
 	if name == "config_enabled" {
 		return defined(sym), true
@@ -446,7 +452,7 @@ func macroCall(name, sym string) (e *Expr, ok bool) {
 }
 
 // operand consumes the tokens up to the next && or || at depth zero.
-func (p *guardParser) operand() *Expr {
+func (p *guardParser) operand() *kcond.Expr {
 	start := p.pos
 	depth := 0
 	for p.pos < len(p.toks) {
@@ -465,20 +471,20 @@ func (p *guardParser) operand() *Expr {
 	return operandExpr(p.toks[start:p.pos])
 }
 
-func operandExpr(toks []string) *Expr {
+func operandExpr(toks []string) *kcond.Expr {
 	switch {
 	case len(toks) == 0:
-		return Var("", Enabled)
+		return kcond.Var("", kcond.Enabled)
 	case toks[0] == "!":
-		return Not(operandExpr(toks[1:]))
+		return kcond.Not(operandExpr(toks[1:]))
 	case toks[0] == "(" && closesAtEnd(toks):
 		return guardCond(toks[1 : len(toks)-1])
-	case len(toks) == 4 && toks[1] == "(" && toks[3] == ")" && IsSymbol(toks[2]):
+	case len(toks) == 4 && toks[1] == "(" && toks[3] == ")" && kcond.IsSymbol(toks[2]):
 		if e, ok := macroCall(toks[0], toks[2]); ok {
 			return e
 		}
 	}
-	return Var(strings.Join(toks, " "), Enabled)
+	return kcond.Var(strings.Join(toks, " "), kcond.Enabled)
 }
 
 // closesAtEnd reports whether the ( at toks[0] is closed by the last token.

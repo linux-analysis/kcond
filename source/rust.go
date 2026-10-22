@@ -1,8 +1,10 @@
-package kcond
+package source
 
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/linux-analysis/kcond"
 )
 
 // analyzeRust computes the regions and code lines of a Rust source from
@@ -21,9 +23,9 @@ func analyzeRust(src []byte) *Source {
 		lines = lines[:len(lines)-1]
 	}
 	toks := lexRust(string(src), len(lines))
-	s := &Source{Cpp: make([]*Expr, len(lines)), Guard: make([]*Expr, len(lines)), Text: make([]string, len(lines))}
+	s := &Source{Cpp: make([]*kcond.Expr, len(lines)), Guard: make([]*kcond.Expr, len(lines)), Text: make([]string, len(lines))}
 	for i := range lines {
-		s.Guard[i] = Const(true)
+		s.Guard[i] = kcond.Const(true)
 		var texts []string
 		for _, t := range toks[i] {
 			texts = append(texts, t.text)
@@ -191,7 +193,7 @@ func rustChar(s string) int {
 
 // cfgScope is an item a #[cfg] attribute conditions, until it ends.
 type cfgScope struct {
-	cond    *Expr
+	cond    *kcond.Expr
 	depth   int  // the bracket depth the item is at
 	started bool // its first token was seen; before it, attributes AND in
 	braced  bool // a { opened at depth: the matching } ends the item
@@ -207,19 +209,19 @@ type cfgScope struct {
 // before the bracket that closes the construct around it. shortcut: an
 // if/else statement ends at its first }, which leaves the else branches
 // out; upgrade if a cfg'd else branch is ever misjudged.
-func cfgRegions(toks [][]rtoken, conds []*Expr) {
+func cfgRegions(toks [][]rtoken, conds []*kcond.Expr) {
 	var stack []*cfgScope
-	active := func() *Expr {
+	active := func() *kcond.Expr {
 		if len(stack) == 0 {
-			return Const(true)
+			return kcond.Const(true)
 		}
 		return stack[len(stack)-1].cond
 	}
-	record := func(li int, c *Expr) {
+	record := func(li int, c *kcond.Expr) {
 		if conds[li] == nil {
 			conds[li] = c
 		} else {
-			conds[li] = Or(conds[li], c)
+			conds[li] = kcond.Or(conds[li], c)
 		}
 	}
 	depth := 0
@@ -239,9 +241,9 @@ func cfgRegions(toks [][]rtoken, conds []*Expr) {
 						inAttr = false
 						if e, inner, ok := cfgAttr(attr); ok {
 							if top := len(stack) - 1; top >= 0 && !stack[top].started {
-								stack[top].cond = And(stack[top].cond, e)
+								stack[top].cond = kcond.And(stack[top].cond, e)
 							} else {
-								stack = append(stack, &cfgScope{cond: And(active(), e), depth: depth, started: inner, inner: inner})
+								stack = append(stack, &cfgScope{cond: kcond.And(active(), e), depth: depth, started: inner, inner: inner})
 							}
 						}
 						for j := attrStart; j <= li; j++ {
@@ -311,7 +313,7 @@ func cfgRegions(toks [][]rtoken, conds []*Expr) {
 	// lines.
 	for i, c := range conds {
 		if c == nil {
-			conds[i] = Const(true)
+			conds[i] = kcond.Const(true)
 		}
 	}
 }
@@ -319,7 +321,7 @@ func cfgRegions(toks [][]rtoken, conds []*Expr) {
 // cfgAttr reads the tokens of an attribute after its #, without the
 // closing bracket: a cfg(...) gives its condition, and inner tells
 // whether it is a #![cfg].
-func cfgAttr(attr []rtoken) (e *Expr, inner, ok bool) {
+func cfgAttr(attr []rtoken) (e *kcond.Expr, inner, ok bool) {
 	if len(attr) > 0 && attr[0].text == "!" {
 		inner, attr = true, attr[1:]
 	}
@@ -331,7 +333,7 @@ func cfgAttr(attr []rtoken) (e *Expr, inner, ok bool) {
 
 // RustCfg reads the predicate of a Rust cfg attribute, as the region of
 // the lines under #[cfg(pred)] (see analyzeRust).
-func RustCfg(pred string) *Expr {
+func RustCfg(pred string) *kcond.Expr {
 	var toks []rtoken
 	for _, line := range lexRust(pred, strings.Count(pred, "\n")+1) {
 		toks = append(toks, line...)
@@ -341,7 +343,7 @@ func RustCfg(pred string) *Expr {
 
 // cfgPred reads the tokens of a cfg predicate, an opaque atom when they
 // do not parse.
-func cfgPred(toks []rtoken) *Expr {
+func cfgPred(toks []rtoken) *kcond.Expr {
 	p := &cfgParser{toks: toks}
 	e := p.pred()
 	if p.pos < len(p.toks) || p.bad {
@@ -375,12 +377,12 @@ func (p *cfgParser) peek() string {
 
 // pred reads one predicate: not(p), all(p, ...), any(p, ...), or a name,
 // with the string it is compared to when there is one.
-func (p *cfgParser) pred() *Expr {
+func (p *cfgParser) pred() *kcond.Expr {
 	start := p.pos
 	name := p.next()
 	if (name == "not" || name == "all" || name == "any") && p.peek() == "(" {
 		p.next()
-		var args []*Expr
+		var args []*kcond.Expr
 		for p.peek() != ")" && !p.bad {
 			args = append(args, p.pred())
 			if p.peek() == "," {
@@ -392,13 +394,13 @@ func (p *cfgParser) pred() *Expr {
 		case "not":
 			if len(args) != 1 {
 				p.bad = true
-				return Const(false)
+				return kcond.Const(false)
 			}
-			return Not(args[0])
+			return kcond.Not(args[0])
 		case "all":
-			return And(args...)
+			return kcond.And(args...)
 		}
-		return Or(args...)
+		return kcond.Or(args...)
 	}
 	value, compared := "", false
 	if p.peek() == "=" {
@@ -411,31 +413,31 @@ func (p *cfgParser) pred() *Expr {
 	}
 	toks := p.toks[start:p.pos]
 	switch {
-	case !IsSymbol(name):
+	case !kcond.IsSymbol(name):
 		switch {
 		case compared:
 		case name == "test" || name == "doctest" || name == "doc":
-			return Const(false)
+			return kcond.Const(false)
 		case name == "MODULE":
 			// The kernel passes --cfg MODULE to a module, as -DMODULE in C.
-			return Var("defined(MODULE)", Enabled)
+			return kcond.Var("defined(MODULE)", kcond.Enabled)
 		}
 		return cfgAtom(toks)
 	case !compared:
-		return Var(name, Enabled)
+		return kcond.Var(name, kcond.Enabled)
 	case value == "y":
-		return Var(name, Builtin)
+		return kcond.Var(name, kcond.Builtin)
 	case value == "m":
-		return Var(name, Module)
+		return kcond.Var(name, kcond.Module)
 	case value == "n":
-		return Const(false)
+		return kcond.Const(false)
 	}
 	return cfgAtom(toks)
 }
 
 // cfgAtom is the opaque atom of a predicate the analysis cannot read,
 // cfg(...) with its tokens and without quotes.
-func cfgAtom(toks []rtoken) *Expr {
+func cfgAtom(toks []rtoken) *kcond.Expr {
 	var b strings.Builder
 	b.WriteString("cfg(")
 	for i, t := range toks {
@@ -445,5 +447,5 @@ func cfgAtom(toks []rtoken) *Expr {
 		b.WriteString(strings.Trim(t.text, "\""))
 	}
 	b.WriteString(")")
-	return Var(b.String(), Enabled)
+	return kcond.Var(b.String(), kcond.Enabled)
 }

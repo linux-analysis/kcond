@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/source"
 )
 
 // tree builds an in-memory kernel tree. Files listed only by name (empty
@@ -851,7 +852,7 @@ func TestKernelOnly(t *testing.T) {
 // Assembly files define __ASSEMBLY__, C files do not, and headers are
 // compiled both ways.
 func TestCodeOf(t *testing.T) {
-	for p, want := range map[string]kcond.Code{
+	for p, want := range map[string]source.Code{
 		"kernel/fork.c":             {Kernel: true},
 		"arch/x86/kernel/head_64.S": {Kernel: true, Assembly: kcond.True},
 		"arch/x86/boot/header.S":    {Assembly: kcond.True},

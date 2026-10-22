@@ -1,9 +1,11 @@
-package kcond
+package source
 
 import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/linux-analysis/kcond"
 )
 
 // kernelC is the code of a C source compiled only into the kernel.
@@ -348,7 +350,7 @@ x
 #endif
 #endif
 `
-	got, err := Lines([]byte(src), Code{Assembly: Unknown})
+	got, err := Lines([]byte(src), Code{Assembly: kcond.Unknown})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +370,7 @@ x
 x
 #endif
 `
-	if got, err = Lines([]byte(src), Code{Assembly: Unknown}); err != nil {
+	if got, err = Lines([]byte(src), Code{Assembly: kcond.Unknown}); err != nil {
 		t.Fatal(err)
 	}
 	if got[5].String() != "true" {
@@ -467,8 +469,8 @@ x
 		want []string
 	}{
 		{kernelC, []string{"true", "true", "false", "false", "false", "false", "false", "false", "CONFIG_A=y", "CONFIG_A=y", "CONFIG_A=y"}},
-		{Code{Kernel: true, Assembly: True}, []string{"false", "false", "true", "true", "true", "true", "true", "true", "false", "false", "false"}},
-		{Code{Assembly: Unknown}, []string{"true", "true", "true", "true", "true", "true", "true", "true", "CONFIG_A=y", "CONFIG_A=y", "CONFIG_A=y"}},
+		{Code{Kernel: true, Assembly: kcond.True}, []string{"false", "false", "true", "true", "true", "true", "true", "true", "false", "false", "false"}},
+		{Code{Assembly: kcond.Unknown}, []string{"true", "true", "true", "true", "true", "true", "true", "true", "CONFIG_A=y", "CONFIG_A=y", "CONFIG_A=y"}},
 	} {
 		got, err := Lines([]byte(src), tc.code)
 		if err != nil {

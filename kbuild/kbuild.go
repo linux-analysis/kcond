@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/source"
 )
 
 // Options selects what to crawl.
@@ -424,7 +425,7 @@ func (r *Result) header(p string) (*kcond.Expr, Status) {
 		es := map[string][]edge{}
 		for h, in := range edges {
 			for _, e := range in {
-				es[h] = append(es[h], edge{e.parent, kcond.With(e.cond, kcond.AssemblyAtom, asm)})
+				es[h] = append(es[h], edge{e.parent, kcond.With(e.cond, source.AssemblyAtom, asm)})
 			}
 		}
 		for h, c := range dirConditions(roots[i], es, false) {
@@ -443,7 +444,7 @@ func (r *Result) header(p string) (*kcond.Expr, Status) {
 			// Module and Define fold over both units at once.
 			in := make([]edge, len(edges[h]))
 			for i, e := range edges[h] {
-				in[i] = edge{e.parent, kcond.EitherUnit(e.cond)}
+				in[i] = edge{e.parent, source.EitherUnit(e.cond)}
 			}
 			r.headers[h], r.parts[h], r.includers[h] = kcond.Or(parts[0], parts[1]), parts, in
 		}
@@ -511,7 +512,7 @@ var rootLists = []string{"init-y", "core-y", "drivers-y", "net-y", "libs-y", "vi
 
 // kernelOnly reports whether the source p is compiled only into the kernel,
 // at the configuration's word size, so that its arch macros follow Kconfig
-// (see kcond.ParseIf). Headers are not, and neither is code a 64-bit
+// (see source.ParseIf). Headers are not, and neither is code a 64-bit
 // configuration also compiles as 16- or 32-bit code: boot code, x86
 // real-mode code, vDSOs (lib/vdso is part of them) and verify_cpu.S, which
 // the real-mode trampoline includes.
@@ -529,8 +530,8 @@ func kernelOnly(p string) bool {
 // CodeOf tells how the file p is compiled (see kernelOnly): __ASSEMBLY__ is
 // defined in .S files and not in C ones, and either way in headers, which
 // both include.
-func CodeOf(p string) kcond.Code {
-	c := kcond.Code{Kernel: kernelOnly(p)}
+func CodeOf(p string) source.Code {
+	c := source.Code{Kernel: kernelOnly(p)}
 	switch path.Ext(p) {
 	case ".S":
 		c.Assembly = kcond.True

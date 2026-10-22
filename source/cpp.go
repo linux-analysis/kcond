@@ -1,4 +1,4 @@
-package kcond
+package source
 
 import (
 	"cmp"
@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/linux-analysis/kcond"
 )
 
 // knownMacros are macros whose definedness is fixed when compiling kernel
@@ -28,7 +30,7 @@ type Code struct {
 	// Assembly tells whether __ASSEMBLY__ is defined: True in assembly
 	// files, which Kbuild compiles with -D__ASSEMBLY__, False in C, and
 	// Unknown in headers, which both include.
-	Assembly Tri
+	Assembly kcond.Tri
 	// Rust is set for a Rust source, whose regions are its #[cfg]
 	// attributes rather than preprocessor directives.
 	Rust bool
@@ -78,13 +80,13 @@ const maxDefinition = 4096
 // tells how the file is compiled; a header is compiled into C and assembly
 // units alike, so its lines count where either compiles them, unless
 // code.KeepAssembly.
-func Lines(src []byte, code Code) ([]*Expr, error) {
+func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 	lines := strings.Split(string(src), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	defs := map[string]*Expr{} // the macros the file defines or undefines
-	test := ""                 // the #if or #ifndef directive just before
+	defs := map[string]*kcond.Expr{} // the macros the file defines or undefines
+	test := ""                       // the #if or #ifndef directive just before
 	for inComment, i := false, 0; i < len(lines); i++ {
 		var text string
 		text, inComment = StripComments(lines[i], inComment)
@@ -92,8 +94,8 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 			name, rest := splitDirective(d)
 			if id := firstIdent(rest); name == "define" && fileMacro(id) {
 				// In a header only a guard: defined right after its test.
-				if toks, _ := lexIf(test); code.Assembly != Unknown || slices.Contains(toks, id) {
-					defs[id] = Const(false)
+				if toks, _ := lexIf(test); code.Assembly != kcond.Unknown || slices.Contains(toks, id) {
+					defs[id] = kcond.Const(false)
 				}
 			}
 			test = ""
@@ -103,31 +105,31 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 		}
 	}
 	type frame struct {
-		prev    []*Expr // conditions of the earlier branches
-		cur     *Expr
+		prev    []*kcond.Expr // conditions of the earlier branches
+		cur     *kcond.Expr
 		sawElse bool
 	}
-	conds := make([]*Expr, len(lines))
+	conds := make([]*kcond.Expr, len(lines))
 	var stack []frame
 	// levels[k] is the condition inside the outermost k frames.
-	levels := []*Expr{Const(true)}
+	levels := []*kcond.Expr{kcond.Const(true)}
 	update := func() {
 		levels = levels[:1]
 		for _, f := range stack {
-			terms := []*Expr{levels[len(levels)-1], f.cur}
+			terms := []*kcond.Expr{levels[len(levels)-1], f.cur}
 			for _, p := range f.prev {
-				terms = append(terms, Not(p))
+				terms = append(terms, kcond.Not(p))
 			}
-			levels = append(levels, And(terms...))
+			levels = append(levels, kcond.And(terms...))
 		}
 	}
-	setConds := func(from, to int, c *Expr) {
+	setConds := func(from, to int, c *kcond.Expr) {
 		for j := from; j <= to; j++ {
 			conds[j] = c
 		}
 	}
 	inComment, first, guard, guardLine := false, true, "", 0
-	track := func(id string, e *Expr) {
+	track := func(id string, e *kcond.Expr) {
 		if len(e.String()) > maxDefinition {
 			delete(defs, id)
 		} else {
@@ -177,7 +179,7 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 			if top.sawElse {
 				return nil, errorf("after #else")
 			}
-			c := Const(true)
+			c := kcond.Const(true)
 			if name == "else" {
 				top.sawElse = true
 			} else {
@@ -197,21 +199,21 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 		case "define", "undef":
 			id := firstIdent(rest)
 			if name == "define" && guard != "" && id == guard {
-				stack[len(stack)-1].cur = Const(true)
+				stack[len(stack)-1].cur = kcond.Const(true)
 				update()
 				setConds(guardLine, i, levels[len(stack)])
 			} else if fileMacro(id) {
 				level, prev := levels[len(stack)], macroDefs(id, code, defs)
 				if name == "define" {
-					track(id, Or(level, prev))
+					track(id, kcond.Or(level, prev))
 				} else {
-					track(id, And(Not(level), prev))
+					track(id, kcond.And(kcond.Not(level), prev))
 				}
 			}
 			guard = ""
 		case "include":
 			for id, e := range defs {
-				track(id, Or(e, And(levels[len(stack)], macro(id, code))))
+				track(id, kcond.Or(e, kcond.And(levels[len(stack)], macro(id, code))))
 			}
 		}
 		first = false
@@ -223,8 +225,8 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 	if len(stack) > 0 {
 		return nil, fmt.Errorf("kcond: %d unterminated #if", len(stack))
 	}
-	if code.Assembly == Unknown && !code.KeepAssembly {
-		either := map[*Expr]*Expr{}
+	if code.Assembly == kcond.Unknown && !code.KeepAssembly {
+		either := map[*kcond.Expr]*kcond.Expr{}
 		for i, c := range conds {
 			e, ok := either[c]
 			if !ok {
@@ -239,11 +241,11 @@ func Lines(src []byte, code Code) ([]*Expr, error) {
 
 // EitherUnit is the condition c of a header's line where a C or an
 // assembly unit compiles it, whichever: c with AssemblyAtom ORed away.
-func EitherUnit(c *Expr) *Expr {
+func EitherUnit(c *kcond.Expr) *kcond.Expr {
 	if !slices.Contains(c.Opaque(), AssemblyAtom) {
 		return c
 	}
-	return Or(With(c, AssemblyAtom, true), With(c, AssemblyAtom, false))
+	return kcond.Or(kcond.With(c, AssemblyAtom, true), kcond.With(c, AssemblyAtom, false))
 }
 
 // splitDirective splits the text after # into the directive name and the
@@ -264,14 +266,14 @@ func firstIdent(s string) string {
 
 // directiveCond returns the condition of an #if, #ifdef or #ifndef line;
 // defs are the macros the file defined or undefined before it.
-func directiveCond(name, rest string, code Code, defs map[string]*Expr) (*Expr, error) {
+func directiveCond(name, rest string, code Code, defs map[string]*kcond.Expr) (*kcond.Expr, error) {
 	if name == "if" {
 		if rest == "" {
 			return nil, fmt.Errorf("missing condition")
 		}
 		e, err := parseIf(rest, code, defs)
 		if err != nil {
-			return Var(strings.Join(strings.Fields(rest), " "), Enabled), nil
+			return kcond.Var(strings.Join(strings.Fields(rest), " "), kcond.Enabled), nil
 		}
 		return e, nil
 	}
@@ -280,7 +282,7 @@ func directiveCond(name, rest string, code Code, defs map[string]*Expr) (*Expr, 
 		return nil, fmt.Errorf("missing macro name")
 	}
 	if name == "ifndef" {
-		return Not(macroDefs(id, code, defs)), nil
+		return kcond.Not(macroDefs(id, code, defs)), nil
 	}
 	return macroDefs(id, code, defs), nil
 }
@@ -292,11 +294,11 @@ func directiveCond(name, rest string, code Code, defs map[string]*Expr) (*Expr, 
 func fileMacro(name string) bool {
 	_, known := knownMacros[name]
 	_, arch := archMacros[name]
-	return name != "" && !known && !arch && !assemblyMacro(name) && !IsSymbol(name)
+	return name != "" && !known && !arch && !assemblyMacro(name) && !kcond.IsSymbol(name)
 }
 
 // macroDefs is macro, with the definitions of the file's own macros.
-func macroDefs(name string, code Code, defs map[string]*Expr) *Expr {
+func macroDefs(name string, code Code, defs map[string]*kcond.Expr) *kcond.Expr {
 	if e, ok := defs[name]; ok {
 		return e
 	}
@@ -354,11 +356,11 @@ func StripComments(line string, inComment bool) (string, bool) {
 // symbols they follow, and __ASSEMBLY__ to what code tells of the file (see
 // Code and macro). Any other operand, such as a comparison or arithmetic,
 // becomes an opaque atom named by its space-separated tokens.
-func ParseIf(s string, code Code) (*Expr, error) { return parseIf(s, code, nil) }
+func ParseIf(s string, code Code) (*kcond.Expr, error) { return parseIf(s, code, nil) }
 
 // parseIf is ParseIf with defs, the definitions of the macros the file
 // defines or undefines before the line.
-func parseIf(s string, code Code, defs map[string]*Expr) (*Expr, error) {
+func parseIf(s string, code Code, defs map[string]*kcond.Expr) (*kcond.Expr, error) {
 	toks, err := lexIf(s)
 	if err != nil {
 		return nil, err
@@ -437,7 +439,7 @@ type cparser struct {
 	toks []string
 	pos  int
 	code Code
-	defs map[string]*Expr
+	defs map[string]*kcond.Expr
 }
 
 func (p *cparser) peek() string {
@@ -578,29 +580,29 @@ func (p *cparser) unary() (*cnode, error) {
 	return &cnode{kind: "call", name: tok, kids: args, lo: lo, hi: p.pos}, nil
 }
 
-func (p *cparser) conv(n *cnode) *Expr {
+func (p *cparser) conv(n *cnode) *kcond.Expr {
 	switch n.kind {
 	case "||":
-		return Or(p.conv(n.kids[0]), p.conv(n.kids[1]))
+		return kcond.Or(p.conv(n.kids[0]), p.conv(n.kids[1]))
 	case "&&":
-		return And(p.conv(n.kids[0]), p.conv(n.kids[1]))
+		return kcond.And(p.conv(n.kids[0]), p.conv(n.kids[1]))
 	case "!":
-		return Not(p.conv(n.kids[0]))
+		return kcond.Not(p.conv(n.kids[0]))
 	case "()":
 		return p.conv(n.kids[0])
 	case "defined":
 		return macroDefs(n.name, p.code, p.defs)
 	case "id":
-		if IsSymbol(n.name) {
+		if kcond.IsSymbol(n.name) {
 			return defined(n.name)
 		}
 	case "num":
 		v, err := cInt(n.name)
 		if err == nil {
-			return Const(v != 0)
+			return kcond.Const(v != 0)
 		}
 	case "call":
-		if len(n.kids) == 1 && n.kids[0].kind == "id" && IsSymbol(n.kids[0].name) {
+		if len(n.kids) == 1 && n.kids[0].kind == "id" && kcond.IsSymbol(n.kids[0].name) {
 			if e, ok := macroCall(n.name, n.kids[0].name); ok {
 				return e
 			}
@@ -613,7 +615,7 @@ func (p *cparser) conv(n *cnode) *Expr {
 			return e
 		}
 	}
-	return Var(strings.Join(p.toks[n.lo:n.hi], " "), Enabled)
+	return kcond.Var(strings.Join(p.toks[n.lo:n.hi], " "), kcond.Enabled)
 }
 
 // cInt parses a C integer literal such as 0x10 or 1UL.
@@ -626,7 +628,7 @@ func cInt(tok string) (uint64, error) {
 // Outside kernel code the atom BITS_PER_LONG == 32 stands for a 64-bit
 // configuration compiling the line with a 32-bit long, as its 32-bit vDSO
 // does.
-func (p *cparser) bitsPerLong(n *cnode) (*Expr, bool) {
+func (p *cparser) bitsPerLong(n *cnode) (*kcond.Expr, bool) {
 	if len(n.kids) != 2 {
 		return nil, false
 	}
@@ -644,14 +646,14 @@ func (p *cparser) bitsPerLong(n *cnode) (*Expr, bool) {
 		return nil, false
 	}
 	holds := func(bits uint64) bool { return slices.Contains(results, sign*cmp.Compare(bits, v)) }
-	long64, long32 := Var("CONFIG_64BIT", Enabled), Not(Var("CONFIG_64BIT", Enabled))
+	long64, long32 := kcond.Var("CONFIG_64BIT", kcond.Enabled), kcond.Not(kcond.Var("CONFIG_64BIT", kcond.Enabled))
 	if !p.code.Kernel {
-		atom := Var("BITS_PER_LONG == 32", Enabled)
-		long64, long32 = And(long64, Not(atom)), Or(long32, atom)
+		atom := kcond.Var("BITS_PER_LONG == 32", kcond.Enabled)
+		long64, long32 = kcond.And(long64, kcond.Not(atom)), kcond.Or(long32, atom)
 	}
 	switch at64, at32 := holds(64), holds(32); {
 	case at64 == at32:
-		return Const(at64), true
+		return kcond.Const(at64), true
 	case at64:
 		return long64, true
 	}
@@ -669,7 +671,7 @@ var sizeMacro = regexp.MustCompile(`^SZ_([0-9]+)([KMG])$`)
 // into the atom PAGE_SIZE <op> <bytes>, which a build decides from its
 // architecture's page sizes (see PageSizeHolds). A size is an integer, an
 // SZ_ constant or XEN_PAGE_SIZE, which is 4 KiB.
-func (p *cparser) pageSize(n *cnode) (*Expr, bool) {
+func (p *cparser) pageSize(n *cnode) (*kcond.Expr, bool) {
 	if len(n.kids) != 2 {
 		return nil, false
 	}
@@ -709,7 +711,7 @@ func (p *cparser) pageSize(n *cnode) (*Expr, bool) {
 		}
 		v = 1 << v
 	}
-	return Var(fmt.Sprintf("PAGE_SIZE %s %d", op, v), Enabled), true
+	return kcond.Var(fmt.Sprintf("PAGE_SIZE %s %d", op, v), kcond.Enabled), true
 }
 
 // PageSizeHolds tells whether a page size atom, as ParseIf makes them,
@@ -732,38 +734,42 @@ func PageSizeHolds(atom string, size uint64) (holds, ok bool) {
 // x86-64 configuration may also compile the line as 16- or 32-bit code,
 // where __i386__ is defined instead of __x86_64__: the atom
 // defined(__i386__) stands for that. __ASSEMBLY__ follows code.Assembly.
-func macro(name string, code Code) *Expr {
+func macro(name string, code Code) *kcond.Expr {
 	if assemblyMacro(name) {
-		if code.Assembly == Unknown {
-			return Var(AssemblyAtom, Enabled)
+		if code.Assembly == kcond.Unknown {
+			return kcond.Var(AssemblyAtom, kcond.Enabled)
 		}
-		return Const(code.Assembly == True)
+		return kcond.Const(code.Assembly == kcond.True)
 	}
 	s, ok := archMacros[name]
 	if !ok {
 		return defined(name)
 	}
-	e := Var(s, Enabled)
+	e := kcond.Var(s, kcond.Enabled)
 	if code.Kernel || name == "__arch_um__" {
 		return e
 	}
-	i386 := Var("defined(__i386__)", Enabled)
+	i386 := kcond.Var("defined(__i386__)", kcond.Enabled)
 	if name == "__i386__" {
-		return Or(e, And(Var("CONFIG_X86_64", Enabled), i386))
+		return kcond.Or(e, kcond.And(kcond.Var("CONFIG_X86_64", kcond.Enabled), i386))
 	}
-	return And(e, Not(i386))
+	return kcond.And(e, kcond.Not(i386))
 }
 
 // defined returns the condition under which macro name is defined.
-func defined(name string) *Expr {
+func defined(name string) *kcond.Expr {
 	if v, ok := knownMacros[name]; ok {
-		return Const(v)
+		return kcond.Const(v)
 	}
-	if !IsSymbol(name) {
-		return Var("defined("+name+")", Enabled)
+	if !kcond.IsSymbol(name) {
+		return kcond.Var("defined("+name+")", kcond.Enabled)
 	}
-	if base, ok := strings.CutSuffix(name, "_MODULE"); ok && IsSymbol(base) {
-		return Var(base, Module)
+	if base, ok := strings.CutSuffix(name, "_MODULE"); ok && kcond.IsSymbol(base) {
+		return kcond.Var(base, kcond.Module)
 	}
-	return Var(name, Builtin)
+	return kcond.Var(name, kcond.Builtin)
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/source"
 	"github.com/linux-analysis/kcond/unidiff"
 )
 
@@ -398,7 +399,7 @@ func region(fsys fs.FS, q query) (*kcond.Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	src, err := kcond.Analyze(data, kbuild.CodeOf(q.path))
+	src, err := source.Analyze(data, kbuild.CodeOf(q.path))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", q.path, err)
 	}
