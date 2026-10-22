@@ -55,7 +55,8 @@ const defaultWorkers = 4
 
 // initial is what is known of a file before any revision is read.
 func initial(f *File) Result {
-	r := Result{Cond: builds.FileCond{Header: f.Header, Region: f.Region}, Arches: builds.FileArches{Path: f.Path, Header: f.Header}}
+	kf := kernel.File{Path: f.Path, Header: f.Header}
+	r := Result{Cond: builds.FileCond{File: kf, Region: f.Region}, Arches: builds.FileArches{File: kf}}
 	if f.Header {
 		r.Cond.Status = builds.StatusHeader
 		if pa := kernel.PathArch(f.Path); pa != "" && pa != kernel.Primary {
@@ -186,9 +187,9 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 	add := func(b builds.Build, arches bool) error {
 		for _, i := range found {
 			f, r := files[i], &results[i]
-			fc := builds.BuildCond(f.Path, f.Header, f.Region, b)
+			fc := b.Eval(kernel.File{Path: f.Path, Header: f.Header}, f.Region)
 			if arches {
-				r.Arches.Add(b, f.Region)
+				r.Arches.Add(b, fc)
 			}
 			if !b.X86_64 {
 				if r.Builds == nil {

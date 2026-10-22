@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 func p(t *testing.T, s string) *kcond.Expr {
@@ -32,15 +33,15 @@ func TestCombine(t *testing.T) {
 		}, "CONFIG_A || CONFIG_B", false},
 		{"headers ignored next to sources", []FileCond{
 			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
-			{Header: true, Status: StatusHeader, Region: tr},
+			{File: kernel.File{Header: true}, Status: StatusHeader, Region: tr},
 		}, "CONFIG_A", false},
 		{"built header counts next to sources", []FileCond{
 			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
-			{Header: true, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: p(t, "CONFIG_R")},
+			{File: kernel.File{Header: true}, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: p(t, "CONFIG_R")},
 		}, "CONFIG_A || (CONFIG_H && CONFIG_R)", false},
 		{"built header leaves other headers in", []FileCond{
-			{Header: true, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: tr},
-			{Header: true, Status: StatusHeader, Region: p(t, "CONFIG_P")},
+			{File: kernel.File{Header: true}, Status: StatusBuilt, Kbuild: p(t, "CONFIG_H"), Region: tr},
+			{File: kernel.File{Header: true}, Status: StatusHeader, Region: p(t, "CONFIG_P")},
 		}, "CONFIG_H || CONFIG_P", false},
 		{"unlisted source", []FileCond{
 			{Status: StatusBuilt, Kbuild: p(t, "CONFIG_A"), Region: tr},
@@ -50,13 +51,13 @@ func TestCombine(t *testing.T) {
 			{Status: StatusNotBuilt, Region: tr},
 		}, "false", false},
 		{"header region", []FileCond{
-			{Header: true, Status: StatusHeader, Region: p(t, "CONFIG_H=y")},
+			{File: kernel.File{Header: true}, Status: StatusHeader, Region: p(t, "CONFIG_H=y")},
 		}, "CONFIG_H=y", false},
 		{"plain header", []FileCond{
-			{Header: true, Status: StatusHeader, Region: tr},
+			{File: kernel.File{Header: true}, Status: StatusHeader, Region: tr},
 		}, "", true},
 		{"dead header region", []FileCond{
-			{Header: true, Status: StatusHeader, Region: kcond.Const(false)},
+			{File: kernel.File{Header: true}, Status: StatusHeader, Region: kcond.Const(false)},
 		}, "false", false},
 		{"no files", nil, "", true},
 	} {

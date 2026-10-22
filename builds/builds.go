@@ -218,28 +218,37 @@ func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
 	return e
 }
 
-// BuildCond is a changed file's condition in build b: a file under another
-// architecture's directory (see kernel.PathArch) is not built, a source gets what
-// b's Makefiles say, a header the condition of the files that include it
-// when they are all known (see kbuild.Result.Lookup) and the status header
-// otherwise, and either is unlisted when b's crawl failed. The region is
-// as b reads it, and both are written plainly (see Build.Plain); a file
-// whose condition is then false, as one listed under another arch's
+// Eval is a changed file's condition in build b, whose changed lines are
+// under region: a file under another architecture's directory (see
+// kernel.PathArch) is not built, a source gets what b's Makefiles say, a
+// header the condition of the files that include it when they are all
+// known (see kbuild.Result.Lookup) and the status header otherwise, and
+// either is unlisted when b's crawl failed. The region is as b reads it
+// (see Build.Region), and both are written plainly (see Build.Plain); a
+// file whose condition is then false, as one listed under another arch's
 // symbol, is not built.
-func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
-	fc := FileCond{Header: header, Region: b.Plain(b.Region(path, region))}
-	switch pa := kernel.PathArch(path); {
+func (b Build) Eval(f kernel.File, region *kcond.Expr) FileCond {
+	fc := FileCond{File: f, region: b.Region(f.Path, region), found: kbuild.Unlisted}
+	fc.Region = b.Plain(fc.region)
+	if b.Kbuild != nil {
+		fc.kbuild, fc.found = b.Kbuild.Lookup(f.Path)
+	}
+	switch pa := kernel.PathArch(f.Path); {
 	case pa != "" && pa != b.Arch:
 		fc.Status = StatusNotBuilt
 	case b.Kbuild == nil:
 		fc.Status = StatusUnlisted
-	default:
-		fc.Status, fc.Kbuild = KbuildStatus(b.Kbuild, path)
-		if fc.Kbuild = b.Plain(fc.Kbuild); fc.Kbuild != nil && fc.Kbuild.IsConst(false) {
+	case fc.found == kbuild.Built:
+		fc.Status = StatusBuilt
+		if fc.Kbuild = b.Plain(fc.kbuild); fc.Kbuild.IsConst(false) {
 			fc.Status, fc.Kbuild = StatusNotBuilt, nil
 		}
+	case fc.found == kbuild.NotBuilt:
+		fc.Status = StatusNotBuilt
+	default:
+		fc.Status = StatusUnlisted
 	}
-	if header && fc.Status == StatusUnlisted {
+	if f.Header && fc.Status == StatusUnlisted {
 		fc.Status = StatusHeader
 	}
 	return fc
@@ -247,34 +256,29 @@ func BuildCond(path string, header bool, region *kcond.Expr, b Build) FileCond {
 
 // term is the condition under which b builds the changed lines of a file,
 // or nil with what b can tell without one: ArchNo when it does not build
-// the file, ArchMaybe when the file's condition there is unknown.
-func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, ArchVerdict) {
-	pa := kernel.PathArch(path)
+// the file, ArchMaybe when the file's condition there is unknown. It reads
+// the crawl's condition and the region before Plain, and judges a header
+// whose includers are not known by its region.
+func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
+	pa := kernel.PathArch(fc.Path)
 	if pa != "" && pa != b.Arch {
 		return nil, ArchNo
 	}
-	if b.Values == nil || (b.Kbuild == nil && !header) {
+	if b.Values == nil || (b.Kbuild == nil && !fc.Header) {
 		return nil, ArchMaybe
 	}
-	region = b.Region(path, region)
-	var e *kcond.Expr
-	st := kbuild.Unlisted
-	if b.Kbuild != nil {
-		e, st = b.Kbuild.Lookup(path)
-	}
-	// A header whose includers are not known is judged by its region.
-	if header && st != kbuild.Built {
+	if fc.Header && fc.found != kbuild.Built {
 		switch {
-		case region.IsConst(false):
+		case fc.region.IsConst(false):
 			return nil, ArchNo
-		case len(region.Symbols()) == 0:
+		case len(fc.region.Symbols()) == 0:
 			return nil, ArchMaybe
 		}
-		return region, ArchYes
+		return fc.region, ArchYes
 	}
-	switch st {
+	switch fc.found {
 	case kbuild.Built:
-		return kcond.And(e, region), ArchYes
+		return kcond.And(fc.kbuild, fc.region), ArchYes
 	case kbuild.NotBuilt:
 		if pa == b.Arch {
 			// Built by rules the crawl does not follow, or only for
@@ -286,13 +290,13 @@ func term(path string, header bool, region *kcond.Expr, b Build) (*kcond.Expr, A
 	return nil, ArchMaybe
 }
 
-// FileArch tells whether a changed file may build in b: its Kbuild
-// condition there, ANDed with the region of its changed lines, must be
-// possible under b's Kconfig. Symbols not in b.Defined become opaque (nil
-// frees nothing), so one no Kconfig file defines yet, often added by the
-// fix itself, neither rules the file in nor out.
-func FileArch(path string, header bool, region *kcond.Expr, b Build) ArchVerdict {
-	t, v := term(path, header, region, b)
+// MayBuild tells whether b may build a changed file, fc as Eval gives it: its
+// Kbuild condition there, ANDed with the region of its changed lines, must
+// be possible under b's Kconfig. Symbols not in b.Defined become opaque
+// (nil frees nothing), so one no Kconfig file defines yet, often added by
+// the fix itself, neither rules the file in nor out.
+func (b Build) MayBuild(fc FileCond) ArchVerdict {
+	t, v := b.term(fc)
 	if t == nil {
 		return v
 	}
@@ -302,37 +306,36 @@ func FileArch(path string, header bool, region *kcond.Expr, b Build) ArchVerdict
 	return ArchNo
 }
 
-// AlwaysBuilt reports whether a changed file is built in every
-// configuration of b: a source listed under a condition that always holds,
-// or a header whose changed lines are under a CONFIG_ condition that does.
-func AlwaysBuilt(path string, header bool, region *kcond.Expr, b Build) bool {
-	t, _ := term(path, header, region, b)
+// AlwaysBuilds reports whether every configuration of b builds a changed file,
+// fc as Eval gives it: a source listed under a condition that always
+// holds, or a header whose changed lines are under a CONFIG_ condition
+// that does.
+func (b Build) AlwaysBuilds(fc FileCond) bool {
+	t, _ := b.term(fc)
 	return t != nil && b.Values.Always(free(t, b.Defined))
 }
 
 // FileArches gathers what the builds of a file's revision say about it.
 type FileArches struct {
-	Path   string
-	Header bool
+	kernel.File
 	// Verdicts are by label arch; x86 merges its x86-64 and i386 builds.
 	Verdicts map[string]ArchVerdict
 	Always   []string // the label arches every configuration of which builds the file
 	Present  []string // the label arches the revision has; empty until a build ran
 }
 
-// Add records what build b says about the file, whose changed lines are
-// under region.
-func (f *FileArches) Add(b Build, region *kcond.Expr) {
+// Add records what build b says about the file, fc as b.Eval gives it.
+func (f *FileArches) Add(b Build, fc FileCond) {
 	if f.Verdicts == nil {
 		f.Verdicts = map[string]ArchVerdict{}
 	}
-	v := FileArch(f.Path, f.Header, region, b)
+	v := b.MayBuild(fc)
 	if old, ok := f.Verdicts[b.Arch]; ok && (old == ArchYes || (old == ArchMaybe && v == ArchNo)) {
 		v = old
 	}
 	f.Verdicts[b.Arch] = v
 	// For x86 only the x86-64 build decides; the i386 one never does.
-	if (b.X86_64 || b.Arch != "x86") && AlwaysBuilt(f.Path, f.Header, region, b) {
+	if (b.X86_64 || b.Arch != "x86") && b.AlwaysBuilds(fc) {
 		f.Always = append(f.Always, b.Arch)
 	}
 	if !slices.Contains(f.Present, b.Arch) {

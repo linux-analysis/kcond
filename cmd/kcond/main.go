@@ -466,7 +466,7 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	err = each(fsys, o, paths, func(b builds.Build) error {
 		for i, q := range queries {
 			f, _ := kernel.FileOf(q.path)
-			fc := builds.BuildCond(q.path, f.Header, regions[i], b)
+			fc := b.Eval(f, regions[i])
 			e, unknown := builds.Combine([]builds.FileCond{fc})
 			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status.String(), Kbuild: condText(fc.Kbuild),
 				Region: fc.Region.String(), Condition: condText(e)}
@@ -640,7 +640,7 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 					region = fc.Region
 				} else {
 					// The revision lacks the build: unknown.
-					fc = builds.FileCond{Header: ch.Header, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
+					fc = builds.FileCond{File: kernel.File{Header: ch.Header}, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
 				}
 			}
 			c := changed{Path: ch.Path, Header: ch.Header, Region: region.String(), Functions: ch.Functions, Rev: res.Rev,
@@ -759,12 +759,12 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	fas := make([]builds.FileArches, len(paths))
 	for i, p := range paths {
 		f, _ := kernel.FileOf(p)
-		fas[i] = builds.FileArches{Path: p, Header: f.Header}
+		fas[i] = builds.FileArches{File: f}
 	}
 	err = builds.Each(fsys, nil, paths, func(b builds.Build) error {
 		warn(o, b)
 		for i := range fas {
-			fas[i].Add(b, kcond.Const(true))
+			fas[i].Add(b, b.Eval(fas[i].File, kcond.Const(true)))
 		}
 		return nil
 	})

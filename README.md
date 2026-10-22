@@ -159,11 +159,12 @@ import (
 	"github.com/linux-analysis/kcond/builds"
 	"github.com/linux-analysis/kcond/dotconfig"
 	"github.com/linux-analysis/kcond/gitfs"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 tree, err := gitfs.Open(ctx, dir, "v6.12")  // an fs.FS; gitfs.WorkTree reads a checkout
 b, ok := builds.Named(tree, "x86_64")        // the Makefile crawl and the Kconfig analysis
-fc := builds.BuildCond(path, false, kcond.Const(true), b) // Status, Kbuild, Region
+fc := b.Eval(kernel.File{Path: path}, kcond.Const(true))   // Status, Kbuild, Region
 e, err := kcond.Parse("CONFIG_A && !CONFIG_B")
 f, err := dotconfig.Read(data)               // Config, Version, Build
 v := e.Eval(f.Config)                        // kcond.True, False or Unknown

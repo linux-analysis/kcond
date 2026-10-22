@@ -5,6 +5,7 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
+	"github.com/linux-analysis/kcond/kernel"
 )
 
 // Status tells how a build relates to a changed file.
@@ -23,25 +24,18 @@ func (s Status) String() string {
 	return [...]string{"", "built", "unlisted", "not built", "header", "missing"}[s]
 }
 
-// KbuildStatus is the status of a source file in a crawl, with its Kbuild
-// condition when it is built.
-func KbuildStatus(res *kbuild.Result, path string) (Status, *kcond.Expr) {
-	e, st := res.Lookup(path)
-	switch st {
-	case kbuild.Built:
-		return StatusBuilt, e
-	case kbuild.NotBuilt:
-		return StatusNotBuilt, nil
-	}
-	return StatusUnlisted, nil
-}
-
-// FileCond is a changed file with its conditions.
+// FileCond is a changed file with its conditions in a build.
 type FileCond struct {
-	Header bool
+	kernel.File
 	Status Status
 	Kbuild *kcond.Expr // set when Status is StatusBuilt
 	Region *kcond.Expr
+
+	// What Eval found before writing the conditions plainly, for MayBuild
+	// and AlwaysBuilds: the crawl's status and condition of the file and the region
+	// as the build reads it.
+	found          kbuild.Status
+	kbuild, region *kcond.Expr
 }
 
 // Combine is the condition of a change given its files: the OR of what

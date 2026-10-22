@@ -134,14 +134,14 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 			t.Fatal(err)
 		}
 		conds[p] = e
-		out[p] = &FileArches{Path: p, Header: strings.HasSuffix(p, ".h")}
+		out[p] = &FileArches{File: file(p)}
 	}
 	var builds, names []string
 	err := Each(fsys, nil, nil, func(b Build) error {
 		builds = append(builds, b.Arch)
 		names = append(names, b.Name)
 		for p, f := range out {
-			f.Add(b, conds[p])
+			f.Add(b, b.Eval(f.File, conds[p]))
 		}
 		return nil
 	})
@@ -157,13 +157,13 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 	return out
 }
 
-func TestBuildCond(t *testing.T) {
+func TestEval(t *testing.T) {
 	region := kcond.Const(true)
 	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
 	err := Each(archTree(), nil, nil, func(b Build) error {
 		for _, p := range paths {
-			fc := BuildCond(p, strings.HasSuffix(p, ".h"), region, b)
+			fc := b.Eval(file(p), region)
 			s := fc.Status.String()
 			if fc.Kbuild != nil {
 				s += " " + fc.Kbuild.String()
@@ -201,10 +201,10 @@ func TestBuildCond(t *testing.T) {
 	}
 	// A build whose crawl failed knows nothing but the arch directories.
 	failed := Build{Arch: "riscv", Name: "riscv"}
-	if fc := BuildCond("drivers/core.c", false, region, failed); fc.Status != StatusUnlisted || fc.Kbuild != nil {
+	if fc := failed.Eval(file("drivers/core.c"), region); fc.Status != StatusUnlisted || fc.Kbuild != nil {
 		t.Errorf("failed build, generic file: %+v", fc)
 	}
-	if fc := BuildCond("arch/arm64/kernel/cpu.c", false, region, failed); fc.Status != StatusNotBuilt {
+	if fc := failed.Eval(file("arch/arm64/kernel/cpu.c"), region); fc.Status != StatusNotBuilt {
 		t.Errorf("failed build, other arch's file: %+v", fc)
 	}
 }
@@ -269,7 +269,7 @@ func TestSummarize(t *testing.T) {
 			if f, ok := files[p]; ok {
 				fs = append(fs, *f)
 			} else {
-				fs = append(fs, FileArches{Path: p})
+				fs = append(fs, FileArches{File: kernel.File{Path: p}})
 			}
 		}
 		return Summarize(fs)
@@ -342,14 +342,14 @@ func TestFailedBuild(t *testing.T) {
 	// of its arch, but still rules out other arches' files.
 	b := Build{Arch: "riscv"}
 	region := kcond.Const(true)
-	if v := FileArch("drivers/core.c", false, region, b); v != ArchMaybe {
+	if v := b.MayBuild(b.Eval(file("drivers/core.c"), region)); v != ArchMaybe {
 		t.Errorf("generic file: %v, want maybe", v)
 	}
-	if v := FileArch("arch/arm64/kernel/cpu.c", false, region, b); v != ArchNo {
+	if v := b.MayBuild(b.Eval(file("arch/arm64/kernel/cpu.c"), region)); v != ArchNo {
 		t.Errorf("other arch's file: %v, want no", v)
 	}
 	x86 := Build{Arch: "x86", X86_64: true, Kbuild: &kbuild.Result{Arch: "x86"}}
-	if AlwaysBuilt("drivers/core.c", false, region, x86) {
+	if x86.AlwaysBuilds(x86.Eval(file("drivers/core.c"), region)) {
 		t.Error("always built without Kconfig values")
 	}
 	// Err says why: here the tree has no top-level Makefile.
@@ -417,12 +417,12 @@ func TestRegionModule(t *testing.T) {
 		"drivers/aha152x.c": "CONFIG_PC=y || CONFIG_S=y",
 		"drivers/both.c":    "CONFIG_A=y || CONFIG_B=y",
 	} {
-		c, unknown := Combine([]FileCond{BuildCond(path, strings.HasSuffix(path, ".h"), region, b)})
+		c, unknown := Combine([]FileCond{b.Eval(file(path), region)})
 		if eq, ok := kcond.Equal(c, p(t, want)); !ok || !eq || unknown {
 			t.Errorf("%s: %s (unknown %v), want %s", path, c, unknown, want)
 		}
 	}
-	if fc := BuildCond("include/linux/lp.h", true, region, b); fc.Region.String() != region.String() {
+	if fc := b.Eval(file("include/linux/lp.h"), region); fc.Region.String() != region.String() {
 		t.Errorf("header region %s, want %s", fc.Region, region)
 	}
 }
@@ -440,14 +440,14 @@ func TestRegionDefines(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := Build{Arch: "x86", Name: "x86_64", X86_64: true, Kbuild: res}
-	c, unknown := Combine([]FileCond{BuildCond("drivers/x.c", false, p(t, `"defined(DEBUG)"`), b)})
+	c, unknown := Combine([]FileCond{b.Eval(file("drivers/x.c"), p(t, `"defined(DEBUG)"`))})
 	if want := p(t, `CONFIG_X && (CONFIG_X_DEBUG=y || "defined(DEBUG)")`); unknown || !equal(c, want) {
 		t.Errorf("Combine = %s (unknown %v), want %s", c, unknown, want)
 	}
 	// Without a flag naming it, the macro's atom stays as it was, and so
 	// does an atom that only ends like a defined() test.
 	for _, atom := range []string{`"defined(OTHER)"`, `"DEBUG)"`} {
-		if fc := BuildCond("drivers/x.c", false, p(t, atom), b); fc.Region.String() != atom {
+		if fc := b.Eval(file("drivers/x.c"), p(t, atom)); fc.Region.String() != atom {
 			t.Errorf("region %s, want %s", fc.Region, atom)
 		}
 	}
@@ -529,4 +529,10 @@ func TestBuildValues(t *testing.T) {
 	if sp, ok := specOf(archTree(), "riscv"); ok {
 		t.Errorf("riscv, which the tree lacks: %+v", sp)
 	}
+}
+
+// file is the kernel file at p.
+func file(p string) kernel.File {
+	f, _ := kernel.FileOf(p)
+	return f
 }
