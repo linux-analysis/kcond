@@ -45,6 +45,14 @@ func (th Theory) Always(e *kcond.Expr) kcond.Tri {
 	return not(th.Possible(kcond.Not(e)))
 }
 
+// Implies tells whether code built under cond is built only where f
+// holds: no configuration of the build makes cond true and f false (see
+// Possible), so CONFIG_BONDING implies CONFIG_NET, and a bool CONFIG_X
+// implies CONFIG_X=y.
+func (th Theory) Implies(cond, f *kcond.Expr) kcond.Tri {
+	return not(th.Possible(kcond.And(cond, kcond.Not(f))))
+}
+
 func not(t kcond.Tri) kcond.Tri {
 	switch t {
 	case kcond.True:

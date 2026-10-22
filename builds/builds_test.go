@@ -520,6 +520,47 @@ func TestBuildValues(t *testing.T) {
 	}
 }
 
+func TestImplies(t *testing.T) {
+	b, ok := NewSession(archTree(), nil).Build("x86_64")
+	if !ok || b.Values == nil {
+		t.Fatalf("x86_64 build: %v", b.Err)
+	}
+	for _, c := range []struct {
+		cond, f string
+		want    bool
+	}{
+		{"CONFIG_WIFI", "CONFIG_WIFI", true},
+		{"CONFIG_WIFI && CONFIG_X", "CONFIG_WIFI", true},
+		{"CONFIG_WIFI || CONFIG_X", "CONFIG_WIFI", false},
+		// Kconfig: WIFI_USB depends on WIFI, so code under it needs WIFI.
+		{"CONFIG_WIFI_USB", "CONFIG_WIFI", true},
+		{"CONFIG_WIFI_USB=m", "CONFIG_WIFI", true},
+		{"CONFIG_WIFI_USB", "!CONFIG_WIFI", false},
+		{"CONFIG_WIFI_USB", "CONFIG_WIFI_USB || CONFIG_MSM", true},
+		{"CONFIG_WIFI_USB", "CONFIG_WIFI && CONFIG_MSM", false},
+		{"CONFIG_WIFI_USB=y", "CONFIG_WIFI_USB=y", true},
+		{"CONFIG_WIFI_USB", "CONFIG_WIFI_USB=y", false},
+		{"CONFIG_WIFI_LEDS", "CONFIG_WIFI_LEDS=y", true}, // a bool is y wherever it is on
+		{"!CONFIG_WIFI", "!CONFIG_WIFI", true},
+		{"CONFIG_WIFI", "true", true},
+		{"false", "CONFIG_WIFI", true},
+		{"true", "CONFIG_WIFI", false},
+		{"CONFIG_WIFI", `"defined(FOO)"`, false},
+	} {
+		cond, err := kcond.Parse(c.cond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := kcond.Parse(c.f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := b.Implies(cond, f) == kcond.True; got != c.want {
+			t.Errorf("Implies(%s, %s) = %v, want %v", c.cond, c.f, got, c.want)
+		}
+	}
+}
+
 // file is the kernel file at p.
 func file(p string) kernel.File {
 	f, _ := kernel.FileOf(p)
