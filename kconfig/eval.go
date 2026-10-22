@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/linux-analysis/kcond"
 )
 
 // Set is a set of tristate values.
@@ -568,101 +566,6 @@ func (v *Values) Tristate(name string) bool {
 func (v *Values) Defined(name string) bool {
 	s := v.t.Syms[strings.TrimPrefix(name, "CONFIG_")]
 	return s != nil && len(s.Files) > 0
-}
-
-// maxEnumerate bounds the symbols whose combinations Range tries one by
-// one.
-const maxEnumerate = 10
-
-// Range reports whether some combination of symbol values makes e true
-// and whether some makes it false. Opaque atoms can be either.
-func (v *Values) Range(e *kcond.Expr) (canTrue, canFalse bool) {
-	syms := e.Symbols()
-	if len(syms) > maxEnumerate {
-		return v.rangeOf(e)
-	}
-	cfg := kcond.Config{}
-	var walk func(i int) bool
-	walk = func(i int) bool {
-		if i == len(syms) {
-			switch e.Eval(cfg) {
-			case kcond.True:
-				canTrue = true
-			case kcond.False:
-				canFalse = true
-			default:
-				canTrue, canFalse = true, true
-			}
-			return canTrue && canFalse
-		}
-		set := v.Of(syms[i])
-		for x, c := range []byte{0, 'm', 'y'} {
-			if set&(1<<x) == 0 {
-				continue
-			}
-			if c == 0 {
-				delete(cfg, syms[i])
-			} else {
-				cfg[syms[i]] = c
-			}
-			if walk(i + 1) {
-				return true
-			}
-		}
-		delete(cfg, syms[i])
-		return false
-	}
-	walk(0)
-	return canTrue, canFalse
-}
-
-// rangeOf is Range with every atom taken on its own.
-func (v *Values) rangeOf(e *kcond.Expr) (canTrue, canFalse bool) {
-	switch e.Op {
-	case kcond.OpConst:
-		return e.Val, !e.Val
-	case kcond.OpVar:
-		if !kcond.IsSymbol(e.Name) {
-			return true, true
-		}
-		set := v.Of(e.Name)
-		var match Set
-		switch e.State {
-		case kcond.Builtin:
-			match = Y
-		case kcond.Module:
-			match = M
-		default:
-			match = M | Y
-		}
-		return set&match != 0, set&^match != 0
-	case kcond.OpNot:
-		t, f := v.rangeOf(e.Args[0])
-		return f, t
-	}
-	and := e.Op == kcond.OpAnd
-	canTrue, canFalse = and, !and
-	for _, a := range e.Args {
-		t, f := v.rangeOf(a)
-		if and {
-			canTrue, canFalse = canTrue && t, canFalse || f
-		} else {
-			canTrue, canFalse = canTrue || t, canFalse && f
-		}
-	}
-	return canTrue, canFalse
-}
-
-// Always reports whether e holds in every configuration.
-func (v *Values) Always(e *kcond.Expr) bool {
-	t, f := v.Range(e)
-	return t && !f
-}
-
-// Possible reports whether e holds in some configuration.
-func (v *Values) Possible(e *kcond.Expr) bool {
-	t, _ := v.Range(e)
-	return t
 }
 
 // Requires returns the bool and tristate symbols, as CONFIG_ names, that

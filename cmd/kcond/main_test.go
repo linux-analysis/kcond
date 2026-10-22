@@ -691,3 +691,15 @@ func TestDiffHeaderNextToSource(t *testing.T) {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
 }
+
+// A line Kconfig never builds, as one under !CONFIG_A in a file built
+// under CONFIG_B, which depends on A, is built nowhere: no arch may build
+// it.
+func TestDeadLine(t *testing.T) {
+	dir, _ := newKernel(t)
+	h := commitFile(t, dir, "lib/b.c", "/* b */\nint b;\n#ifndef CONFIG_A\nint stub;\n#endif\n")
+	out, code := capture(t, "--tree", dir, "diff", h)
+	if want := h + "\tnone\t!CONFIG_A && CONFIG_B\n  lib/b.c\tbuilt\tCONFIG_B\tregion !CONFIG_A\tarches \n"; code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}

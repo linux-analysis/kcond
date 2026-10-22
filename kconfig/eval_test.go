@@ -1,6 +1,7 @@
 package kconfig
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -304,10 +305,17 @@ config OLD
 	expectSets(t, v, map[string]string{"NEW": "ny", "OLD": "n"})
 }
 
-func TestRange(t *testing.T) {
+func TestPossible(t *testing.T) {
 	v := analyze(t, map[string]string{"Kconfig": base + `
 config MMU
 	def_bool y
+
+config NET
+	bool "net"
+
+config BONDING
+	tristate "bonding"
+	depends on NET
 
 config IO_URING
 	bool "io_uring" if EXPERT
@@ -336,27 +344,33 @@ config FOO
 		{`CONFIG_MMU && "$(shell,true)"`, false, true},
 		{"true", true, true},
 		{"false", false, false},
+		// BONDING requires NET.
+		{"CONFIG_BONDING && !CONFIG_NET", false, false},
+		{"!CONFIG_BONDING || CONFIG_NET", true, true},
+		{"CONFIG_BONDING=m && CONFIG_NET", false, true},
 	} {
 		e, err := kcond.Parse(tc.cond)
 		if err != nil {
 			t.Fatalf("Parse(%q): %v", tc.cond, err)
 		}
-		if got := v.Always(e); got != tc.always {
+		th := Theory{Values: v}
+		if got := th.Always(e) == kcond.True; got != tc.always {
 			t.Errorf("Always(%s) = %v, want %v", tc.cond, got, tc.always)
 		}
-		if got := v.Possible(e); got != tc.possible {
+		if got := th.Possible(e) == kcond.True; got != tc.possible {
 			t.Errorf("Possible(%s) = %v, want %v", tc.cond, got, tc.possible)
 		}
 	}
 
-	// Above the enumeration limit symbols are taken one at a time.
-	big, err := kcond.Parse("CONFIG_MMU && (CONFIG_A1 || CONFIG_A2 || CONFIG_A3 || CONFIG_A4 || CONFIG_A5 || CONFIG_A6 || " +
-		"CONFIG_A7 || CONFIG_A8 || CONFIG_A9 || CONFIG_A10 || CONFIG_IO_URING)")
-	if err != nil {
-		t.Fatal(err)
+	// Many symbols: a guess settles an OR at once.
+	var terms []*kcond.Expr
+	for i := range 2000 {
+		terms = append(terms, kcond.And(kcond.Var(fmt.Sprintf("CONFIG_A%d", i), kcond.Enabled), kcond.Var("CONFIG_MMU", kcond.Enabled)))
 	}
-	if !v.Possible(big) || v.Always(big) {
-		t.Errorf("big: possible %v always %v", v.Possible(big), v.Always(big))
+	big := kcond.Or(append(terms, kcond.Var("CONFIG_IO_URING", kcond.Enabled))...)
+	th := Theory{Values: v}
+	if th.Possible(big) != kcond.True || th.Always(big) != kcond.False {
+		t.Errorf("big: possible %v always %v", th.Possible(big), th.Always(big))
 	}
 }
 

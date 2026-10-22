@@ -275,10 +275,13 @@ func (b Build) MayBuild(fc FileCond) ArchVerdict {
 	if t == nil {
 		return v
 	}
-	if b.Possible(t) {
+	switch b.Possible(t) {
+	case kcond.True:
 		return ArchYes
+	case kcond.False:
+		return ArchNo
 	}
-	return ArchNo
+	return ArchMaybe
 }
 
 // AlwaysBuilds reports whether every configuration of b builds a changed file,
@@ -287,7 +290,7 @@ func (b Build) MayBuild(fc FileCond) ArchVerdict {
 // that does.
 func (b Build) AlwaysBuilds(fc FileCond) bool {
 	t, _ := b.term(fc)
-	return t != nil && b.Always(t)
+	return t != nil && b.Always(t) == kcond.True
 }
 
 // FileArches gathers what the builds of a file's revision say about it.
