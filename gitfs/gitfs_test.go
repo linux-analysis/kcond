@@ -273,27 +273,62 @@ func TestCatFile(t *testing.T) {
 	}
 }
 
+// TestWorkTree greps with git grep and with rg, which must agree.
 func TestWorkTree(t *testing.T) {
-	f := newFixture(t)
-	write(t, filepath.Join(f.dir, "lib", "x.c"), "#include \"y.c\"\n")
-	write(t, filepath.Join(f.dir, "lib", "y.c"), "int y;\n")
-	git(t, f.dir, "add", "lib")
-	git(t, f.dir, "commit", "-q", "-m", "Add a library")
-	// The working tree is what is read, untracked files included.
-	write(t, filepath.Join(f.dir, "lib", "z.S"), "# include \"w.S\"\n")
-	w := WorkTree(ctx, f.dir)
-	if data, err := fs.ReadFile(w, "lib/z.S"); err != nil || string(data) != "# include \"w.S\"\n" {
-		t.Errorf("ReadFile = %q, %v", data, err)
-	}
-	g := w.(interface {
-		Grep([]string, ...string) ([]string, error)
-	})
-	got, err := g.Grep([]string{`.c"`, `.S"`}, "*.c", "*.S")
-	if err != nil || !slices.Equal(got, []string{"lib/x.c", "lib/z.S"}) {
-		t.Errorf("Grep = %q, %v; want lib/x.c and lib/z.S", got, err)
-	}
-	if got, err := g.Grep([]string{"no such text"}, "*.c"); err != nil || len(got) != 0 {
-		t.Errorf("Grep for missing text = %q, %v; want nothing", got, err)
+	for _, tool := range []string{"git", "rg"} {
+		t.Run(tool, func(t *testing.T) {
+			if tool == "git" {
+				old := rgPath
+				rgPath = ""
+				t.Cleanup(func() { rgPath = old })
+			} else if rgPath == "" {
+				t.Skip("rg not installed")
+			}
+			f := newFixture(t)
+			write(t, filepath.Join(f.dir, ".gitignore"), "gen.c\n")
+			write(t, filepath.Join(f.dir, "lib", "x.c"), "#include \"y.c\"\n#include \"x.h\"\n")
+			write(t, filepath.Join(f.dir, "lib", "y.c"), "int y;\n")
+			write(t, filepath.Join(f.dir, "lib", "bin.c"), "\x00#include \"y.c\"\n")
+			git(t, f.dir, "add", ".gitignore", "lib")
+			git(t, f.dir, "commit", "-q", "-m", "Add a library")
+			// The working tree is what is read, untracked dot files included
+			// and ignored files left out.
+			write(t, filepath.Join(f.dir, "lib", "z.S"), "# include \"w.S\"\n")
+			write(t, filepath.Join(f.dir, "lib", ".dot", "d.c"), "#include \"y.c\"\n")
+			write(t, filepath.Join(f.dir, "lib", "gen.c"), "#include \"y.c\"\n")
+			// Colors and line numbers the user asks for do not reach the
+			// listing, nor does rg's config file.
+			git(t, f.dir, "config", "color.ui", "always")
+			git(t, f.dir, "config", "grep.lineNumber", "true")
+			rc := filepath.Join(t.TempDir(), "ripgreprc")
+			write(t, rc, "--no-ignore\n--max-count=1\n")
+			t.Setenv("RIPGREP_CONFIG_PATH", rc)
+
+			w := WorkTree(ctx, f.dir)
+			if data, err := fs.ReadFile(w, "lib/z.S"); err != nil || string(data) != "# include \"w.S\"\n" {
+				t.Errorf("ReadFile = %q, %v", data, err)
+			}
+			g := w.(interface {
+				Grep([]string, ...string) ([]string, error)
+				GrepLines([]string, ...string) (map[string][]string, error)
+			})
+			got, err := g.Grep([]string{`.c"`, `.S"`}, "*.c", "*.S")
+			if want := []string{"lib/.dot/d.c", "lib/x.c", "lib/z.S"}; err != nil || !slices.Equal(got, want) {
+				t.Errorf("Grep = %q, %v; want %q", got, err, want)
+			}
+			if got, err := g.Grep([]string{"no such text"}, "*.c"); err != nil || len(got) != 0 {
+				t.Errorf("Grep for missing text = %q, %v; want nothing", got, err)
+			}
+			lines, err := g.GrepLines([]string{"include"}, "*.c", "*.S")
+			want := map[string][]string{
+				"lib/.dot/d.c": {`#include "y.c"`},
+				"lib/x.c":      {`#include "y.c"`, `#include "x.h"`},
+				"lib/z.S":      {`# include "w.S"`},
+			}
+			if err != nil || !maps.EqualFunc(lines, want, slices.Equal) {
+				t.Errorf("GrepLines = %q, %v; want %q", lines, err, want)
+			}
+		})
 	}
 }
 

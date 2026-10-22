@@ -19,7 +19,8 @@ Or `make build` in a checkout, for `bin/kcond`.
 A command reads the kernel tree the current directory is in, found the
 way git finds a repository, or the one `--tree DIR` names: as checked
 out, or at a git revision with `--rev REV`, through git's object store,
-so the checkout stays as it is. Paths are relative to the current
+so the checkout stays as it is. A checkout is grepped with ripgrep when
+it is installed, several times faster than git grep. Paths are relative to the current
 directory, or to the tree with `--tree`, and name files of the tree. The builds are x86_64, i386,
 arm64, arm, powerpc, s390, riscv and loongarch; `--build NAME` reads one
 of them, `--config FILE` the one the `.config` is for, and otherwise

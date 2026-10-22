@@ -1,7 +1,8 @@
 // Package gitfs reads the files of a git revision: a Tree is the file
 // tree of one revision as an fs.FS with a Grep, a CatFile reads blobs by
 // object name, and Diff and Diffs return the changes of commits. It
-// drives the git command line and depends on the standard library only.
+// drives the git command line, and ripgrep when installed, and depends on
+// the standard library only.
 package gitfs
 
 import (
@@ -23,8 +24,9 @@ import (
 	"time"
 )
 
-// Error is a failed git invocation.
+// Error is a failed git or ripgrep invocation.
 type Error struct {
+	Name   string
 	Args   []string
 	Dir    string
 	Stderr string
@@ -32,7 +34,7 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
-	msg := fmt.Sprintf("git %s", strings.Join(e.Args, " "))
+	msg := fmt.Sprintf("%s %s", e.Name, strings.Join(e.Args, " "))
 	if e.Dir != "" {
 		msg += " (in " + e.Dir + ")"
 	}
@@ -45,10 +47,10 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-// command prepares git with args in dir: no prompts, the C locale, and
-// SIGTERM with a grace period when ctx ends.
-func command(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+// command prepares the program name, git or rg, with args in dir: no
+// prompts, the C locale, and SIGTERM with a grace period when ctx ends.
+func command(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -56,10 +58,10 @@ func command(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// run executes git with args in dir and returns stdout. The error is
-// ctx's when it ended, else an *Error.
-func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := command(ctx, dir, args...)
+// run executes the program name with args in dir and returns stdout. The
+// error is ctx's when it ended, else an *Error.
+func run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	cmd := command(ctx, dir, name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -67,7 +69,7 @@ func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	case ctx.Err() != nil:
 		return nil, ctx.Err()
 	case err != nil:
-		return nil, &Error{Args: args, Dir: dir, Stderr: strings.TrimSpace(stderr.String()), Err: err}
+		return nil, &Error{Name: name, Args: args, Dir: dir, Stderr: strings.TrimSpace(stderr.String()), Err: err}
 	}
 	return out, nil
 }
@@ -94,7 +96,7 @@ func Diff(ctx context.Context, dir, hash string) (string, error) {
 		return "", err
 	}
 	args := append([]string{"diff-tree", "--no-commit-id", "--diff-merges=first-parent"}, diffFlags...)
-	out, err := run(ctx, dir, append(args, hash)...)
+	out, err := run(ctx, dir, "git", append(args, hash)...)
 	if err != nil {
 		return "", err
 	}
@@ -115,7 +117,7 @@ func Diffs(ctx context.Context, dir string, hashes []string, f func(i int, diff 
 		}
 	}
 	args := append([]string{"diff-tree", "--stdin", "--always", "--diff-merges=dense-combined"}, diffFlags...)
-	cmd := command(ctx, dir, args...)
+	cmd := command(ctx, dir, "git", args...)
 	cmd.Stdin = strings.NewReader(strings.Join(hashes, "\n") + "\n")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -154,7 +156,7 @@ func Diffs(ctx context.Context, dir string, hashes []string, f func(i int, diff 
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case err != nil:
-		return &Error{Args: args, Dir: dir, Stderr: strings.TrimSpace(stderr.String()), Err: err}
+		return &Error{Name: "git", Args: args, Dir: dir, Stderr: strings.TrimSpace(stderr.String()), Err: err}
 	}
 	f(i, diff.String())
 	return nil
@@ -171,7 +173,7 @@ type CatFile struct {
 
 // NewCatFile starts git cat-file --batch in dir. Close stops it.
 func NewCatFile(ctx context.Context, dir string) (*CatFile, error) {
-	cmd := command(ctx, dir, "cat-file", "--batch")
+	cmd := command(ctx, dir, "git", "cat-file", "--batch")
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -245,7 +247,7 @@ type blob struct {
 
 // Open lists the tree of rev in the repository at dir.
 func Open(ctx context.Context, dir, rev string) (*Tree, error) {
-	out, err := run(ctx, dir, "ls-tree", "-r", "-t", "-z", "-l", "--full-tree", rev)
+	out, err := run(ctx, dir, "git", "ls-tree", "-r", "-t", "-z", "-l", "--full-tree", rev)
 	if err != nil {
 		return nil, err
 	}
@@ -421,9 +423,9 @@ func (d *treeDir) ReadDir(n int) ([]fs.DirEntry, error) {
 	return slices.Clone(rest[:n]), nil
 }
 
-// noMatch tells whether err is git grep finding nothing: exit status 1
-// with nothing on stderr, as it exits 1 for an unreadable object too,
-// saying so.
+// noMatch tells whether err is git grep or rg finding nothing: exit status
+// 1 with nothing on stderr, as git grep exits 1 for an unreadable object
+// too, saying so.
 func noMatch(err error) bool {
 	var gerr *Error
 	var exit *exec.ExitError
@@ -431,9 +433,9 @@ func noMatch(err error) bool {
 }
 
 // WorkTree reads the working tree of the git checkout at dir: the files
-// through os.DirFS, and Grep through git grep over the tracked and
-// untracked files, so that the #include scan of a checkout is as fast as
-// a Tree's. It is safe for concurrent use and needs no Close.
+// through os.DirFS, and Grep through rg when installed, else git grep, over
+// the tracked and untracked files, so that the #include scan of a checkout
+// is as fast as a Tree's. It is safe for concurrent use and needs no Close.
 func WorkTree(ctx context.Context, dir string) fs.FS {
 	return &workTree{FS: os.DirFS(dir), ctx: ctx, dir: dir}
 }
@@ -456,12 +458,26 @@ func (w *workTree) GrepLines(strs []string, globs ...string) (map[string][]strin
 	return grepLines(w.ctx, w.dir, "", strs, globs)
 }
 
+// rgPath is ripgrep's, "" when it is not installed: it greps a working
+// tree several times faster than git grep, which alone reads a revision.
+var rgPath, _ = exec.LookPath("rg")
+
 // grep lists, sorted, the text files matching one of globs that contain
 // one of strs: at rev, or in the working tree with its untracked files
 // when rev is "". With lines, it lists the matching lines instead, in no
 // order, each after its file and a NUL.
 func grep(ctx context.Context, dir, rev string, lines bool, strs, globs []string) ([]string, error) {
-	args := []string{"grep", "--no-color", "-z", "-I", "-F"}
+	name, args, prefix := "git", []string{"grep", "-I"}, rev+":"
+	switch {
+	case rev == "" && rgPath != "":
+		// --hidden greps the dot directories git grep does; the user's
+		// config file could change what is listed.
+		name, args, prefix = rgPath, []string{"--no-config", "--hidden"}, "./"
+	case rev == "":
+		args, prefix = append(args, "--untracked"), ""
+	}
+	// Long flags, as rg's -z and -I are not git grep's.
+	args = append(args, "--color=never", "--null", "-F")
 	sep := []byte{0}
 	if lines {
 		// The user's grep.lineNumber and grep.column would add fields.
@@ -469,17 +485,23 @@ func grep(ctx context.Context, dir, rev string, lines bool, strs, globs []string
 	} else {
 		args = append(args, "-l")
 	}
-	if rev == "" {
-		args = append(args, "--untracked")
-	}
 	for _, s := range strs {
 		args = append(args, "-e", s)
 	}
-	if rev != "" {
-		args = append(args, rev)
+	switch {
+	case name != "git":
+		// rg -g would grep the files .gitignore leaves out, a type does
+		// not; without a path, rg greps its stdin when that is a pipe.
+		for _, g := range globs {
+			args = append(args, "--type-add", "kcond:"+g)
+		}
+		args = append(args, "-t", "kcond", ".")
+	case rev != "":
+		args = append(append(args, rev, "--"), globs...)
+	default:
+		args = append(append(args, "--"), globs...)
 	}
-	args = append(append(args, "--"), globs...)
-	out, err := run(ctx, dir, args...)
+	out, err := run(ctx, dir, name, args...)
 	if noMatch(err) {
 		return nil, nil
 	}
@@ -487,13 +509,8 @@ func grep(ctx context.Context, dir, rev string, lines bool, strs, globs []string
 		return nil, err
 	}
 	var paths []string
-	prefix := rev + ":"
 	for rec := range bytes.SplitSeq(out, sep) {
-		p, ok := string(rec), true
-		if rev != "" {
-			p, ok = strings.CutPrefix(p, prefix)
-		}
-		if ok && p != "" {
+		if p, ok := strings.CutPrefix(string(rec), prefix); ok && p != "" {
 			paths = append(paths, p)
 		}
 	}
@@ -523,7 +540,7 @@ func RevList(ctx context.Context, dir, spec string) ([]string, error) {
 	if err := checkRev(spec); err != nil {
 		return nil, err
 	}
-	out, err := run(ctx, dir, "rev-list", "--reverse", spec)
+	out, err := run(ctx, dir, "git", "rev-list", "--reverse", spec)
 	if err != nil {
 		return nil, err
 	}
