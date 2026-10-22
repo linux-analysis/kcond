@@ -40,12 +40,10 @@ type Build struct {
 	Name   string // the build's name in kernel.ConfigBuilds
 	X86_64 bool   // the x86-64 build, which decides whether x86 always builds a file
 	Kbuild *kbuild.Result
-	Values *kconfig.Values // nil when the Kconfig could not be read
-	// Defined are the CONFIG_ symbols some Kconfig file of the whole tree
-	// defines (see Defined), which tells a symbol of another arch from one
-	// no Kconfig has yet; nil when they could not be read.
-	Defined map[string]bool
-	Err     error // why Kbuild, Values or Defined is nil
+	// Theory is what the build's Kconfig tells, its Defined being the
+	// symbols of every Kconfig file of the tree (see Defined).
+	kconfig.Theory
+	Err error // why Kbuild, Values or Defined is nil
 }
 
 // KconfigEnv is the environment for reading the Kconfig of an arch/
@@ -196,32 +194,6 @@ func Defined(fsys fs.FS) (map[string]bool, error) {
 	return defined, err
 }
 
-// free makes the CONFIG_ symbols of e that defined lacks opaque; nil
-// defined frees nothing.
-func free(e *kcond.Expr, defined map[string]bool) *kcond.Expr {
-	if defined == nil {
-		return e
-	}
-	switch e.Op {
-	case kcond.OpVar:
-		if kcond.IsSymbol(e.Name) && !defined[e.Name] {
-			return kcond.Var("undefined:"+e.Name, kcond.Enabled)
-		}
-	case kcond.OpNot:
-		return kcond.Not(free(e.Args[0], defined))
-	case kcond.OpAnd, kcond.OpOr:
-		args := make([]*kcond.Expr, len(e.Args))
-		for i, a := range e.Args {
-			args[i] = free(a, defined)
-		}
-		if e.Op == kcond.OpAnd {
-			return kcond.And(args...)
-		}
-		return kcond.Or(args...)
-	}
-	return e
-}
-
 // Eval is a changed file's condition in build b, whose changed lines are
 // under region: a file under another architecture's directory (see
 // kernel.PathArch) is not built, a source gets what b's Makefiles say, a
@@ -297,15 +269,13 @@ func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
 
 // MayBuild tells whether b may build a changed file, fc as Eval gives it: its
 // Kbuild condition there, ANDed with the region of its changed lines, must
-// be possible under b's Kconfig. Symbols not in b.Defined become opaque
-// (nil frees nothing), so one no Kconfig file defines yet, often added by
-// the fix itself, neither rules the file in nor out.
+// be possible under b's Kconfig (see kconfig.Theory.Possible).
 func (b Build) MayBuild(fc FileCond) ArchVerdict {
 	t, v := b.term(fc)
 	if t == nil {
 		return v
 	}
-	if b.Values.Possible(free(t, b.Defined)) {
+	if b.Possible(t) {
 		return ArchYes
 	}
 	return ArchNo
@@ -317,7 +287,7 @@ func (b Build) MayBuild(fc FileCond) ArchVerdict {
 // that does.
 func (b Build) AlwaysBuilds(fc FileCond) bool {
 	t, _ := b.term(fc)
-	return t != nil && b.Values.Always(free(t, b.Defined))
+	return t != nil && b.Always(t)
 }
 
 // FileArches gathers what the builds of a file's revision say about it.
