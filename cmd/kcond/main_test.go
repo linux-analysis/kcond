@@ -65,6 +65,7 @@ func TestMessages(t *testing.T) {
 		want string
 	}{
 		{[]string{"-x"}, "flag provided but not defined: -x\nrun kcond -h for usage\n"},
+		{[]string{"--tree", dir, "search", "HEAD", "--where", "A &&"}, "kcond: parse \"CONFIG_A &&\" at 11: expected an operand\n"},
 		{[]string{"--tree", dir, "cond", "lib/a.c:5-"}, "kcond: usage: lib/a.c:5-: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "cond", "lib/a.c:1:5"}, "kcond: usage: lib/a.c:1:5: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
@@ -661,6 +662,154 @@ func TestCondHeader(t *testing.T) {
 	}
 }
 
+func TestSearch(t *testing.T) {
+	dir, fix := newKernel(t)
+	base := git(t, dir, "rev-parse", fix+"^")
+	// After the fix: a line of b.c (CONFIG_B, which depends on A on x86 and
+	// which arm64 lacks); d.c under obj-y; a.c and d.c together; b.c deleted.
+	third := commitFile(t, dir, "lib/b.c", "/* the b */\nint b = 2;\n")
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "add", name)
+	}
+	write("lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += d.o\n")
+	write("lib/d.c", "int d;\n")
+	git(t, dir, "commit", "-q", "-m", "d")
+	always := git(t, dir, "rev-parse", "HEAD")
+	write("lib/a.c", "int a = 2;\n#ifdef CONFIG_B\nint ab;\n#endif\n")
+	write("lib/d.c", "int d = 2;\n")
+	git(t, dir, "commit", "-q", "-m", "two")
+	two := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "rm", "-q", "lib/b.c")
+	write("lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-y += d.o\n")
+	git(t, dir, "commit", "-q", "-m", "del")
+	del := git(t, dir, "rev-parse", "HEAD")
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The deciding file of the two-file commit is a.c, or d.c for --always.
+	rows := map[string]string{fix: "lib/a.c\tCONFIG_A", third: "lib/b.c\tCONFIG_B", always: "lib/d.c\ttrue", two: "lib/a.c\tCONFIG_A",
+		del: "lib/b.c\tCONFIG_B", two + " always": "lib/d.c\ttrue"}
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		// B depends on A, so a line under B is built only with A; the
+		// deleted b.c is read at its commit.
+		{[]string{"--where", "CONFIG_A"}, []string{fix, third, two, del}},
+		{[]string{"--where", "CONFIG_A", "--strict"}, []string{fix, third, del}},
+		{[]string{"--where", "B"}, []string{third, del}},
+		{[]string{"--where", "!CONFIG_A"}, nil},
+		{[]string{"--where", "CONFIG_A || CONFIG_B"}, []string{fix, third, two, del}},
+		{[]string{"--always"}, []string{always, two + " always"}},
+		{[]string{"--always", "--strict"}, []string{always}},
+		{[]string{"--config", cfg}, []string{fix, always, two}},
+		{[]string{"--config", cfg, "--where", "CONFIG_A"}, []string{fix, two}},
+		{[]string{"--label", "generic"}, []string{fix, always, two}},
+		{[]string{"--label", "x86"}, []string{third, del}},
+		{[]string{"--arch", "arm64"}, []string{fix, always, two}},
+		{[]string{"--arch", "x86", "--where", "CONFIG_B"}, []string{third, del}},
+	} {
+		args := append([]string{"--tree", dir, "search", base + "..HEAD"}, c.args...)
+		var want string
+		for _, h := range c.want {
+			want += strings.TrimSuffix(h, " always") + "\t" + rows[h] + "\n"
+		}
+		if out, code := capture(t, args...); code != 0 || out != want {
+			t.Errorf("search %v = %q, %d; want %q", c.args, out, code, want)
+		}
+	}
+	// The two-file commit alone is judged where its Makefiles are read, at
+	// itself, and -q tells whether anything matched.
+	if out, code := capture(t, "--tree", dir, "search", two, "--where", "CONFIG_A"); code != 0 || out != two+"\tlib/a.c\tCONFIG_A\n" {
+		t.Errorf("search of a hash = %q, %d", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "-q", "search", two, "--where", "CONFIG_A"); code != 0 || out != "" {
+		t.Errorf("-q with a match = %q, %d", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "-q", "search", two, "--where", "!CONFIG_A"); code != 1 || out != "" {
+		t.Errorf("-q without a match = %q, %d", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "--json", "search", two, "--always"); code != 0 ||
+		!strings.Contains(out, `"path": "lib/d.c"`) || !strings.Contains(out, `"condition": "true"`) {
+		t.Errorf("--json = %q, %d", out, code)
+	}
+	for _, args := range [][]string{
+		{"search", two},
+		{"search", two, "--label", "generic", "--strict"},
+		{"search", two, "--arch", "mips"},
+		{"search", two, "--label", "x"},
+		{"search", two, "--arch", "x86", "--build", "x86_64"},
+		{"search", two, "--label", "generic", "--where", "CONFIG_A", "--build", "arm64"},
+		{"search", two, "--where", "CONFIG_A &&"},
+		{"search", two, "--where", `"defined(FOO)"`},
+		{"search", two, "--where", "CONFIG_A", "--rev", two},
+		{"search", "--where", "CONFIG_A"},
+	} {
+		if out, code := capture(t, append([]string{"--tree", dir}, args...)...); code != 2 {
+			t.Errorf("%v = %q, %d; want a usage error", args, out, code)
+		}
+	}
+}
+
+// A file --arch or --label finds is printed with its condition in the
+// build of the arch that passed: e.c is CONFIG_ARM64 on arm64, which x86
+// never builds.
+func TestSearchArchCondition(t *testing.T) {
+	dir, _ := newKernel(t)
+	commitFile(t, dir, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-$(CONFIG_ARM64) += e.o\n")
+	h := commitFile(t, dir, "lib/e.c", "int e;\n")
+	for _, f := range [][]string{{"--arch", "arm64"}, {"--label", "arm64"}} {
+		args := append([]string{"--tree", dir, "search", h}, f...)
+		if out, code := capture(t, args...); code != 0 || out != h+"\tlib/e.c\tCONFIG_ARM64\n" {
+			t.Errorf("search %v = %q, %d", f, out, code)
+		}
+	}
+	// A file no arch builds, B being x86's, is printed as diff reads it.
+	commitFile(t, dir, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nifdef CONFIG_ARM64\nobj-$(CONFIG_B) += n.o\nendif\n")
+	h = commitFile(t, dir, "lib/n.c", "int n;\n")
+	if out, code := capture(t, "--tree", dir, "search", h, "--label", "none"); code != 0 || out != h+"\tlib/n.c\tfalse\n" {
+		t.Errorf("search --label none = %q, %d", out, code)
+	}
+}
+
+// --always reads a file's changed lines together, as diff does: lines
+// under CONFIG_A and !CONFIG_A are built in every configuration, though
+// neither is alone.
+func TestSearchAlwaysBranches(t *testing.T) {
+	dir, _ := newKernel(t)
+	commitFile(t, dir, "lib/Makefile", "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += d.o\n")
+	commitFile(t, dir, "lib/d.c", "#ifdef CONFIG_A\nint d;\n#else\nint e;\n#endif\n")
+	h := commitFile(t, dir, "lib/d.c", "#ifdef CONFIG_A\nint d = 1;\n#else\nint e = 1;\n#endif\n")
+	if out, code := capture(t, "--tree", dir, "--build", "x86_64", "diff", h); code != 0 || !strings.HasPrefix(out, h+"\ttrue\n") {
+		t.Errorf("diff = %q, %d", out, code)
+	}
+	for _, f := range [][]string{{"--always"}, {"--always", "--strict"}} {
+		args := append([]string{"--tree", dir, "search", h}, f...)
+		if out, code := capture(t, args...); code != 0 || out != h+"\tlib/d.c\ttrue\n" {
+			t.Errorf("search %v = %q, %d", f, out, code)
+		}
+	}
+}
+
+// A header no listed source includes is judged by the regions of its
+// changed lines, and --where reads =y on a bool as the build does.
+func TestSearchHeader(t *testing.T) {
+	dir, _ := newKernel(t)
+	h := commitFile(t, dir, "include/linux/x.h", "int x(void);\n#ifdef CONFIG_A\nint xa(void);\n#endif\n")
+	for _, where := range []string{"CONFIG_A", "A=y"} {
+		if out, code := capture(t, "--tree", dir, "search", h, "--where", where); code != 0 || out != h+"\tinclude/linux/x.h\tCONFIG_A\n" {
+			t.Errorf("search --where %s = %q, %d", where, out, code)
+		}
+	}
+	if out, code := capture(t, "--tree", dir, "diff", h, "--where", "CONFIG_A"); code != 2 {
+		t.Errorf("diff --where = %q, %d; want a usage error", out, code)
+	}
+}
+
 // Next to a source, a header counts only through its changed lines under
 // a CONFIG_ condition: the options of the sources decide the change, and a
 // common header's own lines, read wherever its includers are, do not.
@@ -690,16 +839,83 @@ func TestDiffHeaderNextToSource(t *testing.T) {
 	if code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := capture(t, "--tree", dir, "--config", cfg, "search", common, guarded); code != 0 || out != "" {
+		t.Errorf("search --config = %q, %d; want no match: the header's lines do not count", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "search", common, "--where", "CONFIG_A"); code != 0 || out != common+"\tlib/b.c\tCONFIG_B\n" {
+		t.Errorf("search --where CONFIG_A = %q, %d; want lib/b.c deciding", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "search", guarded, "--where", "CONFIG_MODULES"); code != 0 || out != guarded+"\tinclude/linux/x.h\tCONFIG_A && CONFIG_MODULES\n" {
+		t.Errorf("search --where CONFIG_MODULES = %q, %d; want the header's guarded line", out, code)
+	}
+}
+
+// A header no includer resolves counts next to a source through its
+// changed lines under a CONFIG_ condition, as diff's condition counts it.
+func TestSearchHeaderNextToSource(t *testing.T) {
+	dir, _ := newKernel(t)
+	for name, content := range map[string]string{
+		"lib/b.c":           "/* b */\nint b = 2;\n",
+		"include/linux/x.h": "int x(void);\n#ifdef CONFIG_A\nint xa(void);\n#endif\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "add", name)
+	}
+	git(t, dir, "commit", "-q", "-m", "b and x")
+	h := git(t, dir, "rev-parse", "HEAD")
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_MODULES=y\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := capture(t, "--tree", dir, "--config", cfg, "diff", h); code != 0 || !strings.HasPrefix(out, h+"\tapplies\tCONFIG_A || CONFIG_B\n") {
+		t.Fatalf("diff = %q, %d; want applies under CONFIG_A", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "--config", cfg, "search", h); code != 0 || out != h+"\tinclude/linux/x.h\tCONFIG_A\n" {
+		t.Errorf("search --config = %q, %d; want the header's line, as diff says", out, code)
+	}
+	// The header's line counts against --strict too.
+	if out, code := capture(t, "--tree", dir, "search", h, "--where", "CONFIG_B", "--strict"); code != 0 || out != "" {
+		t.Errorf("search --where CONFIG_B --strict = %q, %d; want no match", out, code)
+	}
 }
 
 // A line Kconfig never builds, as one under !CONFIG_A in a file built
 // under CONFIG_B, which depends on A, is built nowhere: no arch may build
-// it.
+// it, and no --where holds of it.
 func TestDeadLine(t *testing.T) {
 	dir, _ := newKernel(t)
 	h := commitFile(t, dir, "lib/b.c", "/* b */\nint b;\n#ifndef CONFIG_A\nint stub;\n#endif\n")
 	out, code := capture(t, "--tree", dir, "diff", h)
 	if want := h + "\tnone\t!CONFIG_A && CONFIG_B\n  lib/b.c\tbuilt\tCONFIG_B\tregion !CONFIG_A\tarches \n"; code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+	for _, where := range []string{"CONFIG_A", "!CONFIG_A", "CONFIG_B"} {
+		if out, code := capture(t, "--tree", dir, "search", h, "--where", where); code != 0 || out != "" {
+			t.Errorf("search --where %s = %q, %d; want no match", where, out, code)
+		}
+	}
+}
+
+// A file the range's end lacks is judged a line at a time by the build of
+// the revision that has it, and a revision without the build leaves the
+// commits it decides unknown rather than failing the search.
+func TestSearchWaitingFiles(t *testing.T) {
+	dir, fix := newKernel(t)
+	git(t, dir, "rm", "-q", "lib/b.c")
+	git(t, dir, "commit", "-q", "-m", "drop b")
+	gone := git(t, dir, "rev-parse", "HEAD")
+	// At the range's end B no longer depends on A; when b.c went, it did.
+	commitFile(t, dir, "arch/x86/Kconfig", "config X86\n\tdef_bool y\n\nconfig MODULES\n\tbool \"m\"\n\nconfig A\n\tbool \"a\"\n\nconfig B\n\ttristate \"b\"\n")
+	if out, code := capture(t, "--tree", dir, "search", fix+"..HEAD", "--where", "CONFIG_A"); code != 0 || out != gone+"\tlib/b.c\tCONFIG_B\n" {
+		t.Errorf("search --where CONFIG_A = %q, %d; want lib/b.c as its revision builds it", out, code)
+	}
+	if out, code := capture(t, "--tree", dir, "search", fix+"..HEAD", "--build", "loongarch", "--where", "CONFIG_A"); code != 0 || out != "" {
+		t.Errorf("search --build loongarch = %q, %d; want nothing and no error", out, code)
 	}
 }

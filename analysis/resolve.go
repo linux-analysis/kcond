@@ -91,7 +91,7 @@ func (r Result) Counted(build string) builds.FileCond {
 	return fc
 }
 
-// Options tune a Resolve or a Diff.
+// Options tune a Resolve, a Diff or a Search.
 type Options struct {
 	Workers  int               // revisions crawled at once; 4 when 0
 	Progress func(crawled int) // called after each revision crawled, with the count so far
@@ -103,6 +103,11 @@ type Options struct {
 	// Warn is told what the caller should know, as a range without
 	// commits; nil tells nothing.
 	Warn func(msg string)
+	// Visit, when not nil, is told of each file Resolve finds at a
+	// revision, with each build read there and the file's condition in
+	// it, while the build is at hand; it may be called from several
+	// goroutines at once, for different files.
+	Visit func(f *File, b builds.Build, fc builds.FileCond)
 }
 
 const defaultWorkers = 4
@@ -171,7 +176,7 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 				for j, k := range byRev[rev] {
 					in[j] = files[k]
 				}
-				res, err := Rev(cctx, dir, rev, in, opts.Build)
+				res, err := Rev(cctx, dir, rev, in, opts)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
@@ -212,9 +217,9 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 
 // Rev computes the conditions and architectures at rev of the files that
 // exist there, in the order of files; a file rev lacks has an empty
-// result; build is Options.Build. A revision the tree does not have, or
+// result. opts are as for Resolve, but for Workers and Progress. A revision the tree does not have, or
 // without a top-level Makefile, has no files.
-func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]Result, error) {
+func Rev(ctx context.Context, dir, rev string, files []*File, opts Options) ([]Result, error) {
 	tree, err := gitfs.Open(ctx, dir, rev)
 	if err != nil {
 		var gerr *gitfs.Error
@@ -242,6 +247,9 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		for _, i := range found {
 			f, r := files[i], &results[i]
 			fc := b.Eval(f.File, f.Region)
+			if opts.Visit != nil {
+				opts.Visit(f, b, fc)
+			}
 			if arches {
 				r.Arches.Add(b, fc)
 			}
@@ -267,8 +275,8 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		paths = append(paths, files[i].Path)
 	}
 	s := builds.NewSession(tree, paths)
-	if build != "" {
-		b, ok := s.Build(build)
+	if opts.Build != "" {
+		b, ok := s.Build(opts.Build)
 		switch {
 		case errors.Is(b.Err, kbuild.ErrNoMakefile):
 			return nil, nil

@@ -132,7 +132,7 @@ func TestRevGrepError(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []*File{{File: kernel.File{Path: "lib/a.c"}, Region: kcond.Const(true)}}
-	if found, err := Rev(context.Background(), linux, "HEAD", files, ""); err == nil {
+	if found, err := Rev(context.Background(), linux, "HEAD", files, Options{}); err == nil {
 		t.Errorf("Rev = %v, nil; want the git grep error", found)
 	}
 	if _, err := Resolve(context.Background(), linux, []*File{{File: kernel.File{Path: "lib/a.c"}, Region: kcond.Const(true), Revs: []string{"HEAD"}}}, Options{}); err == nil {

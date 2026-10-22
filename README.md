@@ -98,6 +98,45 @@ selftests, perf or comments, does not apply, with the label `none` and
 the condition `false`; one that changes no kernel code but Makefiles,
 Kconfig or device trees has no label and is unknown.
 
+`search` lists the commits of a range whose change passes filters, oldest
+first, each with the first changed file that passed and the condition it
+passed with. `--config FILE` keeps the commits that apply to the `.config`,
+as `diff` would say, the ones it calls unknown left out; `--where COND`
+those with a changed line built only where the condition holds, judged
+with the Kconfig dependencies, so a `CONFIG_BONDING` line passes `--where
+CONFIG_NET`, and the condition may be any formula of options, the
+`CONFIG_` prefix optional; `--always` those with a changed file built in
+every configuration, its lines read together as in `diff`, so a header
+that changes both branches of an `#ifdef` passes; `--arch ARCH` those an
+architecture may build and `--label LABEL` those with an arch label,
+both reading every build, and alone they print the first file the
+architecture, or any, may build, with its condition there; a change no
+file of which counts, as a documentation fix `--label none` finds,
+prints no file. A filter holds when some changed line passes it, a file
+for `--always` and `--arch`, or every one with `--strict`; a btrfs fix
+that also changes `fs/inode.c` passes `--where CONFIG_BTRFS_FS` and
+fails it with `--strict`. A file counts as it
+counts in `diff`'s condition and arch label, so next to a source a header
+counts only through its lines under a `CONFIG_` condition. `-q` exits 1
+when nothing matches:
+
+    $ kcond search v6.12.1..v6.12.2 --config .config
+    78de864e8af3649b03f905e206e6f06f3aa4c006	kernel/sched/core.c	true
+    26cc5063e3c2a5d14f42fe623c9567bd1499fb19	fs/ext4/inode.c	CONFIG_EXT4_FS
+    ...
+    $ kcond search v6.12.1..v6.12.2 --where CONFIG_IPV6
+    $ kcond search v6.12.1..v6.12.2 --where 'CONFIG_BTRFS_FS || CONFIG_XFS_FS' --strict
+    $ kcond search v6.12.1..v6.12.2 --always --label generic
+    $ kcond search v6.12.1..v6.12.2 --config .config | cut -f1 | git log --no-walk --stdin --oneline
+
+A search reads the Makefiles where `diff` does and judges each file from
+its Kbuild condition alone when that settles the filters, reading the
+`#if` regions of its changed lines otherwise, and stops at the first line
+that decides a commit; a file the range's end lacks is read at its commit
+afterwards. The 3,266 commits of v7.3-rc1..v7.3-rc7 take 10 seconds with
+`--config`, against 20 for `diff`; `--arch` and `--label` read every build
+for the commits the other filters keep.
+
 `arches` lists the architectures that may build a file, those where its
 condition is unknown and those that always build it, and labels the set
 `generic`, `several`, one architecture, `other` or `none`:

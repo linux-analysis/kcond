@@ -1,7 +1,8 @@
 // Command kcond answers CONFIG_ questions about a kernel tree: under which
 // condition each architecture build compiles a file, what a commit
 // changes and under which condition, which architectures may build it,
-// and whether a condition holds for a .config.
+// which commits of a range match a condition, and whether a condition
+// holds for a .config.
 //
 // The tree is the one the current directory is in, or --tree DIR; it is
 // read as checked out, or at --rev REV. Paths are relative to the current
@@ -21,6 +22,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,12 +67,34 @@ commits:
                               the Makefiles read at its end; --build or
                               --config reads that build only, without the
                               arch label
+  search HASH|A..B...         the commits whose change passes the filters,
+                              oldest first: hash, the first changed file that
+                              passed and the condition it passed with; the
+                              Makefiles are read as diff reads them, and
+                              --arch and --label read every build
+
+filters, for search:
+  --config FILE  a changed line is built by the .config: the commit applies
+                 to it as diff says, but one diff calls unknown does not
+                 match
+  --where COND   a changed line is built only where COND holds: its
+                 condition implies COND, with the Kconfig dependencies (a
+                 CONFIG_BONDING line passes --where CONFIG_NET); COND is a
+                 condition of CONFIG_ options, the prefix optional
+  --always       a changed file is built in every configuration, its
+                 lines together, as diff reads them
+  --arch ARCH    ARCH may build a changed file
+  --label LABEL  the change's arch label is LABEL: generic, several, other,
+                 none or an arch
+  --strict       --config, --where, --always and --arch hold for every
+                 changed line, not some
 
 a .config:
   eval EXPR...                whether conditions hold for the --config file
   config FILE                 what a .config says: build, version, options
 
-exit status: 0; 1 with -q when something does not apply; 2 on an error.
+exit status: 0; 1 with -q when something does not apply or a search finds
+nothing; 2 on an error.
 
 flags:
 `
@@ -78,6 +102,8 @@ flags:
 // opts are the flags every command takes.
 type opts struct {
 	tree, rev, build, config string
+	where, arch, label       string // search filters
+	always, strict           bool
 	json, version, quiet     bool
 	cfg                      *dotconfig.File // the --config file, read once
 	stderr                   io.Writer
@@ -100,7 +126,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.config, "config", "", "a kernel .config, plain or gzip-compressed")
 	fs.BoolVar(&o.json, "json", false, "print JSON")
 	fs.BoolVar(&o.version, "version", false, "print the version and exit")
-	fs.BoolVar(&o.quiet, "q", false, "print nothing; exit 1 unless every condition or commit applies")
+	fs.BoolVar(&o.quiet, "q", false, "print nothing; exit 1 unless every condition or commit applies, or a search finds nothing")
+	fs.StringVar(&o.where, "where", "", "search: a changed line is built only where this condition holds")
+	fs.BoolVar(&o.always, "always", false, "search: a changed file is built in every configuration, its lines together")
+	fs.StringVar(&o.arch, "arch", "", "search: this architecture may build a changed file")
+	fs.StringVar(&o.label, "label", "", "search: the change has this arch label")
+	fs.BoolVar(&o.strict, "strict", false, "search: every changed line passes --config, --where, --always and --arch, not some")
 	fs.Usage = func() {} // a flag error points to -h below
 	printUsage := func(w io.Writer) {
 		fmt.Fprint(w, usage)
@@ -148,7 +179,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	c, known := commands[words[0]]
 	if o.quiet && (c.verdict == nil || !c.verdict(o)) {
-		fmt.Fprintln(stderr, "kcond: -q needs a verdict: eval, or cond or diff with --config")
+		fmt.Fprintln(stderr, "kcond: -q needs a verdict: eval, or cond or diff with --config, or a search")
+		return 2
+	}
+	if !c.search && (o.where != "" || o.always || o.arch != "" || o.label != "" || o.strict) {
+		fmt.Fprintln(stderr, "kcond: --where, --always, --arch, --label and --strict filter a search")
 		return 2
 	}
 	if known {
@@ -181,7 +216,8 @@ func message(err error) string {
 
 var errUsage = errors.New("usage")
 
-// errNo is what a command returns under -q when something does not apply.
+// errNo is what a command returns under -q when something does not apply,
+// or a search finds nothing.
 var errNo = errors.New("does not apply")
 
 // quiet is the result of -q: errNo unless every one of the n verdicts is
@@ -201,11 +237,13 @@ type command struct {
 	// verdict tells whether the command gives a verdict with the flags
 	// of o, for -q; nil for never.
 	verdict func(o opts) bool
+	search  bool // the search filters apply
 }
 
 var commands = map[string]command{
 	"cond":    {run: cond, verdict: withConfig},
 	"diff":    {run: diff, verdict: withConfig},
+	"search":  {run: search, verdict: func(opts) bool { return true }, search: true},
 	"arches":  {run: arches},
 	"files":   {run: files},
 	"eval":    {run: eval, verdict: withConfig},
@@ -829,6 +867,79 @@ func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
 	return print(out, o, rows, func() {
 		for _, r := range rows {
 			fmt.Fprintf(out, "%s\t%s\n", r.Path, r.Condition)
+		}
+	})
+}
+
+var identRe = regexp.MustCompile(`=?[A-Za-z0-9_]+`)
+
+// parseCond reads a --where condition: CONFIG_ options, the prefix
+// optional, under !, && and ||, with =y and =m.
+func parseCond(s string) (*kcond.Expr, error) {
+	if strings.Contains(s, `"`) {
+		return nil, fmt.Errorf("%w: --where takes CONFIG_ options, not %s", errUsage, s)
+	}
+	s = identRe.ReplaceAllStringFunc(s, func(id string) string {
+		if strings.HasPrefix(id, "=") || id == "true" || id == "false" || strings.HasPrefix(id, "CONFIG_") {
+			return id
+		}
+		return "CONFIG_" + id
+	})
+	return kcond.Parse(s)
+}
+
+// search prints the commits whose change passes the filters the flags
+// give (see analysis.Search).
+func search(ctx context.Context, o opts, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("%w: search takes commit hashes or ranges A..B", errUsage)
+	}
+	if o.rev != "" {
+		return fmt.Errorf("%w: search reads commits; --rev does not apply", errUsage)
+	}
+	lines := o.cfg != nil || o.where != "" || o.always // the filters on changed lines
+	arches := o.arch != "" || o.label != ""            // the filters on architectures
+	switch {
+	case !lines && !arches:
+		return fmt.Errorf("%w: search needs a filter: --config, --where, --always, --arch or --label", errUsage)
+	case o.strict && !lines && o.arch == "":
+		return fmt.Errorf("%w: --strict needs --config, --where, --always or --arch", errUsage)
+	case arches && o.build != "":
+		return fmt.Errorf("%w: --arch and --label read every build", errUsage)
+	case o.arch != "" && !slices.Contains(kernel.LabelArches, o.arch):
+		return fmt.Errorf("%w: --arch takes one of %s", errUsage, strings.Join(kernel.LabelArches, ", "))
+	case o.label != "" && !slices.Contains(kernel.LabelArches, o.label) && !slices.Contains(kernel.ArchLabels, o.label):
+		return fmt.Errorf("%w: --label takes one of %s", errUsage, strings.Join(slices.Concat(kernel.ArchLabels, kernel.LabelArches), ", "))
+	}
+	var where *kcond.Expr
+	if o.where != "" {
+		var err error
+		if where, err = parseCond(o.where); err != nil {
+			return err
+		}
+	}
+	dir, _, err := treeDir(o)
+	if err != nil {
+		return err
+	}
+	var cfg kcond.Config
+	if o.cfg != nil {
+		cfg = o.cfg.Config
+	}
+	fl := analysis.Filters{Config: cfg, Where: where, Always: o.always, Arch: o.arch, Label: o.label, Strict: o.strict}
+	matches, err := analysis.Search(ctx, dir, args, fl, analysis.Options{Build: buildName(o), Warn: o.note})
+	if err != nil {
+		return err
+	}
+	if o.quiet {
+		if len(matches) == 0 {
+			return errNo
+		}
+		return nil
+	}
+	return print(out, o, matches, func() {
+		for _, m := range matches {
+			fmt.Fprintf(out, "%s\t%s\t%s\n", m.Commit, m.Path, m.Condition)
 		}
 	})
 }
