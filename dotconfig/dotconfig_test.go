@@ -100,3 +100,25 @@ func TestParse(t *testing.T) {
 		}
 	}
 }
+
+func TestOptions(t *testing.T) {
+	cfg, err := options(strings.NewReader(`#
+# Automatically generated file; DO NOT EDIT.
+CONFIG_A=y
+CONFIG_B=m
+# CONFIG_C is not set
+CONFIG_D="string"
+CONFIG_E=0x10
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sym, want := range map[string]byte{"CONFIG_A": 'y', "CONFIG_B": 'm', "CONFIG_D": 'y', "CONFIG_E": 'y'} {
+		if cfg[sym] != want {
+			t.Errorf("cfg[%s] = %q, want %q", sym, cfg[sym], want)
+		}
+	}
+	if _, ok := cfg["CONFIG_C"]; ok {
+		t.Error("CONFIG_C is not set but present")
+	}
+}

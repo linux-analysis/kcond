@@ -4,9 +4,7 @@
 package kcond
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -451,26 +449,6 @@ func (e *Expr) operand() string {
 // Config maps the symbols set in a .config to 'y' or 'm'. Symbols that are
 // not set are absent.
 type Config map[string]byte
-
-// ParseConfig reads a .config. Non-tristate symbols with a value count as
-// 'y'.
-func ParseConfig(r io.Reader) (Config, error) {
-	cfg := Config{}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		name, val, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
-		if !ok || !IsSymbol(name) || val == "n" {
-			continue
-		}
-		if val == "m" {
-			cfg[name] = 'm'
-		} else {
-			cfg[name] = 'y'
-		}
-	}
-	return cfg, sc.Err()
-}
 
 // Tri is a three-valued truth value.
 type Tri uint8

@@ -3,6 +3,7 @@
 package dotconfig
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"errors"
@@ -107,7 +108,7 @@ func Parse(data []byte) (File, error) {
 	if bytes.IndexByte(data, 0) >= 0 {
 		return File{}, errors.New("the file holds binary data: not a kernel .config")
 	}
-	cfg, err := kcond.ParseConfig(bytes.NewReader(data))
+	cfg, err := options(bytes.NewReader(data))
 	if err != nil {
 		return File{}, err
 	}
@@ -143,4 +144,24 @@ func Parse(data []byte) (File, error) {
 		return File{}, fmt.Errorf("no conditions for %s configurations; the builds are %s", f.Build, strings.Join(builds.ConfigBuilds, ", "))
 	}
 	return f, nil
+}
+
+// options reads the options of a .config. Non-tristate symbols with a
+// value count as 'y'.
+func options(r io.Reader) (kcond.Config, error) {
+	cfg := kcond.Config{}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		name, val, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
+		if !ok || !kcond.IsSymbol(name) || val == "n" {
+			continue
+		}
+		if val == "m" {
+			cfg[name] = 'm'
+		} else {
+			cfg[name] = 'y'
+		}
+	}
+	return cfg, sc.Err()
 }
