@@ -173,7 +173,7 @@ v := e.Eval(f.Config)                        // kcond.True, False or Unknown
 `Session.Builds` walks every build of a tree; `change.Changes` reads the
 files and regions a commit's diff touches, `builds.Combine` and
 `builds.Summarize` turn them into one condition and an architecture
-label, and `crawl.Resolve` does that for many files across revisions,
+label, and `analysis.Resolve` does that for many files across revisions,
 crawling each revision once. `kconfig.Parse` and `kconfig.Analyze` give
 the values each symbol can take.
 

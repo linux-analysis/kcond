@@ -1,0 +1,56 @@
+package analysis
+
+import (
+	"context"
+	"strings"
+
+	"github.com/linux-analysis/kcond/gitfs"
+)
+
+// Commit is a commit to read, with the revisions its Makefiles are read
+// at, in order.
+type Commit struct {
+	Hash string
+	Revs []string
+}
+
+// Walk passes f the commits args name, in order, with their diffs: hashes,
+// and the commits of each A..B range. A hash reads its Makefiles at
+// itself, then at its parent for the files it deletes; a range's commits
+// read them at the range's end first, the tree a config that is checked
+// against them was built from, so that the whole range takes one crawl.
+// A hash reads as its change to its first parent, and a range's merge as
+// its own change: the rest of what the merge brings is the range's other
+// commits. warn is told of a range without commits.
+func Walk(ctx context.Context, dir string, args []string, warn func(msg string), f func(c Commit, diff string)) error {
+	for _, a := range args {
+		_, end, ok := strings.Cut(a, "..")
+		if !ok {
+			d, err := gitfs.Diff(ctx, dir, a)
+			if err != nil {
+				return err
+			}
+			f(Commit{a, []string{a, a + "^"}}, d)
+			continue
+		}
+		// A...B ends at B too, and A.. at HEAD.
+		if end = strings.TrimPrefix(end, "."); end == "" {
+			end = "HEAD"
+		}
+		hashes, err := gitfs.RevList(ctx, dir, a)
+		if err != nil {
+			return err
+		}
+		if len(hashes) == 0 {
+			warn(a + " has no commits")
+		}
+		err = gitfs.Diffs(ctx, dir, hashes, func(i int, d string) {
+			h := hashes[i]
+			f(Commit{h, []string{end, h, h + "^"}}, d)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -1,4 +1,4 @@
-package crawl
+package analysis
 
 import (
 	"context"
@@ -71,12 +71,12 @@ func TestResolve(t *testing.T) {
 	c2 := commitFile(t, linux, "lib/b.c", "int b;\n", "b")
 	tr := kcond.Const(true)
 	files := []*File{
-		{Path: "lib/a.c", Region: tr, Revs: []string{c2, c1}},
-		{Path: "lib/b.c", Region: tr, Revs: []string{c1, c2}},
-		{Path: "lib/c.c", Region: tr, Revs: []string{c1, c2}},
-		{Path: "include/x.h", Header: true, Region: tr, Revs: []string{c1}},
-		{Path: "arch/arm/x.h", Header: true, Region: tr, Revs: []string{c1}},
-		{Path: "lib/a.h", Header: true, Region: tr, Revs: []string{c1}},
+		{File: kernel.File{Path: "lib/a.c"}, Region: tr, Revs: []string{c2, c1}},
+		{File: kernel.File{Path: "lib/b.c"}, Region: tr, Revs: []string{c1, c2}},
+		{File: kernel.File{Path: "lib/c.c"}, Region: tr, Revs: []string{c1, c2}},
+		{File: kernel.File{Path: "include/x.h", Header: true}, Region: tr, Revs: []string{c1}},
+		{File: kernel.File{Path: "arch/arm/x.h", Header: true}, Region: tr, Revs: []string{c1}},
+		{File: kernel.File{Path: "lib/a.h", Header: true}, Region: tr, Revs: []string{c1}},
 	}
 	var crawled int
 	got, err := Resolve(context.Background(), linux, files, Options{Workers: 2, Progress: func(n int) { crawled = n }})
@@ -93,11 +93,11 @@ func TestResolve(t *testing.T) {
 	} {
 		r := got[i]
 		kb := ""
-		if r.Cond.Kbuild != nil {
-			kb = r.Cond.Kbuild.String()
+		if r.Cond("").Kbuild != nil {
+			kb = r.Cond("").Kbuild.String()
 		}
-		if r.Rev != want.rev || r.Cond.Status != want.status || kb != want.kbuild {
-			t.Errorf("%s: rev %q status %q kbuild %q; want %q %q %q", files[i].Path, r.Rev, r.Cond.Status, kb, want.rev, want.status, want.kbuild)
+		if r.Rev != want.rev || r.Cond("").Status != want.status || kb != want.kbuild {
+			t.Errorf("%s: rev %q status %q kbuild %q; want %q %q %q", files[i].Path, r.Rev, r.Cond("").Status, kb, want.rev, want.status, want.kbuild)
 		}
 	}
 	if arches, _ := got[0].Arches.Lists(); len(arches) != 1 || arches[0] != "x86" {
@@ -112,8 +112,8 @@ func TestResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if arches, _ := one[0].Arches.Lists(); one[0].Cond.Kbuild == nil || one[0].Cond.Kbuild.String() != "CONFIG_A" || len(arches) != 0 {
-		t.Errorf("a.c in x86_64 only: kbuild %v arches %v; want CONFIG_A and none", one[0].Cond.Kbuild, arches)
+	if arches, _ := one[0].Arches.Lists(); one[0].Cond("").Kbuild == nil || one[0].Cond("").Kbuild.String() != "CONFIG_A" || len(arches) != 0 {
+		t.Errorf("a.c in x86_64 only: kbuild %v arches %v; want CONFIG_A and none", one[0].Cond("").Kbuild, arches)
 	}
 }
 
@@ -131,11 +131,11 @@ func TestRevGrepError(t *testing.T) {
 	if err := os.Remove(filepath.Join(linux, ".git", "objects", oid[:2], oid[2:])); err != nil {
 		t.Fatal(err)
 	}
-	files := []*File{{Path: "lib/a.c", Region: kcond.Const(true)}}
+	files := []*File{{File: kernel.File{Path: "lib/a.c"}, Region: kcond.Const(true)}}
 	if found, err := Rev(context.Background(), linux, "HEAD", files, ""); err == nil {
 		t.Errorf("Rev = %v, nil; want the git grep error", found)
 	}
-	if _, err := Resolve(context.Background(), linux, []*File{{Path: "lib/a.c", Region: kcond.Const(true), Revs: []string{"HEAD"}}}, Options{}); err == nil {
+	if _, err := Resolve(context.Background(), linux, []*File{{File: kernel.File{Path: "lib/a.c"}, Region: kcond.Const(true), Revs: []string{"HEAD"}}}, Options{}); err == nil {
 		t.Error("Resolve succeeded; want the git grep error")
 	}
 }
@@ -155,16 +155,16 @@ func TestResolveSplitX86(t *testing.T) {
 	commitFile(t, linux, "arch/i386/kernel/cpu/mtrr/mtrr.h", "int mtrr;\n", "mtrr")
 	var files []*File
 	for _, p := range []string{"arch/i386/kernel/cpu/mtrr/main.c", "arch/i386/kernel/cpu/mtrr/mtrr.h"} {
-		files = append(files, &File{Path: p, Header: strings.HasSuffix(p, ".h"), Region: kcond.Const(true), Revs: []string{"HEAD"}})
+		files = append(files, &File{File: kernel.File{Path: p, Header: strings.HasSuffix(p, ".h")}, Region: kcond.Const(true), Revs: []string{"HEAD"}})
 	}
 	got, err := Resolve(context.Background(), linux, files, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, want := range []string{"built CONFIG_MTRR", "built CONFIG_MTRR"} {
-		s := got[i].Cond.Status.String()
-		if got[i].Cond.Kbuild != nil {
-			s += " " + got[i].Cond.Kbuild.String()
+		s := got[i].Cond("").Status.String()
+		if got[i].Cond("").Kbuild != nil {
+			s += " " + got[i].Cond("").Kbuild.String()
 		}
 		if s != want {
 			t.Errorf("%s: x86-64 condition %q, want %q", files[i].Path, s, want)

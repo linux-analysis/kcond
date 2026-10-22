@@ -1,8 +1,9 @@
-// Package crawl finds the Kbuild conditions and the architectures of
-// files at the revisions of a git tree: each revision is crawled once for
-// all the files that need it, and a file a revision lacks is looked up at
-// its next one.
-package crawl
+// Package analysis answers what kcond asks of commits: Walk lists the
+// commits arguments name with their diffs, and Resolve finds the Kbuild
+// conditions and the architectures of their files at the revisions of a
+// git tree, crawling each revision once for all the files that need it
+// and looking a file a revision lacks up at its next one.
+package analysis
 
 import (
 	"context"
@@ -21,8 +22,7 @@ import (
 
 // File is a changed file to look up.
 type File struct {
-	Path   string
-	Header bool
+	kernel.File
 	Region *kcond.Expr // the condition of the changed lines
 	Revs   []string    // the revisions to read the Makefiles from, in order
 }
@@ -32,14 +32,33 @@ type Result struct {
 	// Rev is the revision whose Makefiles were read: the first of the
 	// file's Revs that has it, or "" when none does.
 	Rev string
-	// Cond is the file's condition in the primary build. A header whose
-	// includers are not known has the status header, one of another arch
-	// is not built, and a source no revision has is missing.
-	Cond builds.FileCond
-	// Builds holds the file's conditions in the builds other than the
-	// primary one at Rev, by name.
-	Builds map[string]builds.FileCond
+	// Conds holds the file's conditions in the builds read at Rev, by
+	// name.
+	Conds  map[string]builds.FileCond
 	Arches builds.FileArches
+
+	// before is what is known of the file without a revision: a header
+	// whose includers are not known has the status header, one of another
+	// arch than the primary one is not built, and a source no revision has
+	// is missing.
+	before builds.FileCond
+}
+
+// Cond is the file's condition in build, x86-64's for "". Without a
+// revision that has the file, or without its x86-64 build, it is what is
+// known of the file without one; a revision without another build leaves
+// the file unlisted there.
+func (r Result) Cond(build string) builds.FileCond {
+	if build == "" {
+		build = kernel.X86_64Build
+	}
+	if fc, ok := r.Conds[build]; ok {
+		return fc
+	}
+	if r.Rev == "" || build == kernel.X86_64Build {
+		return r.before
+	}
+	return builds.FileCond{File: r.before.File, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
 }
 
 // Options tune a Resolve.
@@ -55,12 +74,11 @@ const defaultWorkers = 4
 
 // initial is what is known of a file before any revision is read.
 func initial(f *File) Result {
-	kf := kernel.File{Path: f.Path, Header: f.Header}
-	r := Result{Cond: builds.FileCond{File: kf, Region: f.Region}, Arches: builds.FileArches{File: kf}}
+	r := Result{before: builds.FileCond{File: f.File, Region: f.Region}, Arches: builds.FileArches{File: f.File}}
 	if f.Header {
-		r.Cond.Status = builds.StatusHeader
+		r.before.Status = builds.StatusHeader
 		if pa := kernel.PathArch(f.Path); pa != "" && pa != kernel.Primary {
-			r.Cond.Status = builds.StatusNotBuilt
+			r.before.Status = builds.StatusNotBuilt
 		}
 	}
 	return r
@@ -84,7 +102,7 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 		if len(f.Revs) > 0 {
 			pending = append(pending, i)
 		} else if !f.Header {
-			results[i].Cond.Status = builds.StatusMissing
+			results[i].before.Status = builds.StatusMissing
 		}
 	}
 	crawled := 0
@@ -148,7 +166,7 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 				if next[i]++; next[i] < len(files[i].Revs) {
 					pending = append(pending, i)
 				} else if !files[i].Header {
-					results[i].Cond.Status = builds.StatusMissing
+					results[i].before.Status = builds.StatusMissing
 				}
 			}
 		}
@@ -187,18 +205,14 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 	add := func(b builds.Build, arches bool) error {
 		for _, i := range found {
 			f, r := files[i], &results[i]
-			fc := b.Eval(kernel.File{Path: f.Path, Header: f.Header}, f.Region)
+			fc := b.Eval(f.File, f.Region)
 			if arches {
 				r.Arches.Add(b, fc)
 			}
-			if !b.X86_64 {
-				if r.Builds == nil {
-					r.Builds = map[string]builds.FileCond{}
-				}
-				r.Builds[b.Name] = fc
-				continue
+			if r.Conds == nil {
+				r.Conds = map[string]builds.FileCond{}
 			}
-			r.Cond = fc
+			r.Conds[b.Name] = fc
 		}
 		return ctx.Err()
 	}
