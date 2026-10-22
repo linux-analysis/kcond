@@ -146,13 +146,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		o.cfg = &f
 	}
-	if o.quiet && (o.cfg == nil || !slices.Contains([]string{"cond", "diff", "eval"}, words[0])) {
+	c, known := commands[words[0]]
+	if o.quiet && (c.verdict == nil || !c.verdict(o)) {
 		fmt.Fprintln(stderr, "kcond: -q needs a verdict: eval, or cond or diff with --config")
 		return 2
 	}
-	// Ctrl-C kills the process: a crawl it interrupted would read as
-	// files not built.
-	err = dispatch(context.Background(), o, words[0], words[1:], stdout)
+	if known {
+		// Ctrl-C kills the process: a crawl it interrupted would read as
+		// files not built.
+		err = c.run(context.Background(), o, words[1:], stdout)
+	} else {
+		err = fmt.Errorf("%w: unknown command %q", errUsage, words[0])
+	}
 	switch {
 	case errors.Is(err, errNo):
 		return 1
@@ -190,25 +195,26 @@ func quiet(n int, verdict func(i int) string) error {
 	return nil
 }
 
-func dispatch(ctx context.Context, o opts, cmd string, args []string, out io.Writer) error {
-	switch cmd {
-	case "cond":
-		return cond(ctx, o, args, out)
-	case "diff":
-		return diff(ctx, o, args, out)
-	case "arches":
-		return arches(ctx, o, args, out)
-	case "files":
-		return files(ctx, o, args, out)
-	case "eval":
-		return eval(o, args, out)
-	case "config":
-		return config(o, args, out)
-	case "symbols":
-		return symbols(ctx, o, args, out)
-	}
-	return fmt.Errorf("%w: unknown command %q", errUsage, cmd)
+// command is a command of the line, with what its flags may ask of it.
+type command struct {
+	run func(ctx context.Context, o opts, args []string, out io.Writer) error
+	// verdict tells whether the command gives a verdict with the flags
+	// of o, for -q; nil for never.
+	verdict func(o opts) bool
 }
+
+var commands = map[string]command{
+	"cond":    {run: cond, verdict: withConfig},
+	"diff":    {run: diff, verdict: withConfig},
+	"arches":  {run: arches},
+	"files":   {run: files},
+	"eval":    {run: eval, verdict: withConfig},
+	"config":  {run: config},
+	"symbols": {run: symbols},
+}
+
+// withConfig tells whether the flags give a .config.
+func withConfig(o opts) bool { return o.cfg != nil }
 
 // open reads the tree the flags name, at --rev or as checked out. close
 // releases it.
@@ -634,7 +640,7 @@ func readConfig(path string) (dotconfig.File, error) {
 	return dotconfig.Read(data)
 }
 
-func eval(o opts, exprs []string, out io.Writer) error {
+func eval(_ context.Context, o opts, exprs []string, out io.Writer) error {
 	if o.cfg == nil || len(exprs) == 0 {
 		return fmt.Errorf("%w: eval takes --config FILE and conditions", errUsage)
 	}
@@ -660,7 +666,7 @@ func eval(o opts, exprs []string, out io.Writer) error {
 	})
 }
 
-func config(o opts, args []string, out io.Writer) error {
+func config(_ context.Context, o opts, args []string, out io.Writer) error {
 	if len(args) != 1 {
 		return fmt.Errorf("%w: config takes one file", errUsage)
 	}
