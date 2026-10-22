@@ -81,3 +81,11 @@ func Term(f FileCond, sources bool) (e *kcond.Expr, ok bool) {
 	}
 	return nil, true
 }
+
+// Labelled tells whether a changed file's architectures count in the arch
+// label of its change (see Summarize), sources telling whether the change
+// has a source among its files: a header next to a source does not, even
+// one whose includers build it, which counts in the condition (see Term).
+func Labelled(f kernel.File, sources bool) bool {
+	return !(f.Header && sources)
+}

@@ -258,7 +258,7 @@ func (b Build) Eval(f kernel.File, region *kcond.Expr) FileCond {
 // or nil with what b can tell without one: ArchNo when it does not build
 // the file, ArchMaybe when the file's condition there is unknown. It reads
 // the crawl's condition and the region before Plain, and judges a header
-// whose includers are not known by its region.
+// whose includers are not known by its region, as Term does.
 func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
 	pa := kernel.PathArch(fc.Path)
 	if pa != "" && pa != b.Arch {
@@ -268,13 +268,14 @@ func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
 		return nil, ArchMaybe
 	}
 	if fc.Header && fc.found != kbuild.Built {
+		e, _ := Term(FileCond{File: fc.File, Status: StatusHeader, Region: fc.region}, false)
 		switch {
-		case fc.region.IsConst(false):
-			return nil, ArchNo
-		case len(fc.region.Symbols()) == 0:
+		case e == nil:
 			return nil, ArchMaybe
+		case e.IsConst(false):
+			return nil, ArchNo
 		}
-		return fc.region, ArchYes
+		return e, ArchYes
 	}
 	switch fc.found {
 	case kbuild.Built:
@@ -388,7 +389,7 @@ func Summarize(files []FileArches) ArchSummary {
 		for _, a := range f.Present {
 			present[a] = true
 		}
-		if sources && f.Header {
+		if !Labelled(f.File, sources) {
 			continue
 		}
 		pa := kernel.PathArch(f.Path)
