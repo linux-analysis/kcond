@@ -61,13 +61,18 @@ func (r Result) Cond(build string) builds.FileCond {
 	return builds.FileCond{File: r.before.File, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
 }
 
-// Options tune a Resolve.
+// Options tune a Resolve or a Diff.
 type Options struct {
 	Workers  int               // revisions crawled at once; 4 when 0
 	Progress func(crawled int) // called after each revision crawled, with the count so far
 	// Build, one of kernel.ConfigBuilds, is the only build read, and the
 	// architectures are left out; every build is read when it is "".
 	Build string
+	// Config is the .config Diff gives verdicts for, when not nil.
+	Config kcond.Config
+	// Warn is told what the caller should know, as a range without
+	// commits; nil tells nothing.
+	Warn func(msg string)
 }
 
 const defaultWorkers = 4

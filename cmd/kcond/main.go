@@ -11,7 +11,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +33,6 @@ import (
 	"github.com/linux-analysis/kcond/gitfs"
 	"github.com/linux-analysis/kcond/kernel"
 	"github.com/linux-analysis/kcond/source"
-	"github.com/linux-analysis/kcond/unidiff"
 )
 
 const usage = `usage: kcond [flags] command [args]
@@ -508,31 +506,6 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	})
 }
 
-// changed is one file a commit changes, with its conditions.
-type changed struct {
-	Path      string            `json:"path"`
-	Header    bool              `json:"header"`
-	Region    string            `json:"region"`
-	Functions []string          `json:"functions,omitempty"`
-	Rev       string            `json:"rev,omitempty"`
-	Status    string            `json:"status"`
-	Kbuild    string            `json:"kbuild,omitempty"`
-	Builds    map[string]string `json:"builds,omitempty"`
-	Arches    []string          `json:"arches"`
-	Unknown   []string          `json:"unknown_arches"`
-}
-
-// commitResult is what diff reports for one commit.
-type commitResult struct {
-	Commit    string    `json:"commit"`
-	Files     []changed `json:"files"`
-	Condition string    `json:"condition"`
-	Unknown   bool      `json:"unknown"`
-	Label     string    `json:"label"`
-	Arches    []string  `json:"arches"`
-	Verdict   string    `json:"verdict,omitempty"`
-}
-
 func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%w: diff takes commit hashes or ranges A..B", errUsage)
@@ -544,89 +517,14 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	build := buildName(o)
 	var cfg kcond.Config
 	if o.cfg != nil {
 		cfg = o.cfg.Config
 	}
-	cat, err := gitfs.NewCatFile(ctx, dir)
+	results, err := analysis.Diff(ctx, dir, args, analysis.Options{Build: build, Config: cfg, Warn: o.note})
 	if err != nil {
 		return err
-	}
-	defer cat.Close()
-	// Every commit's files go through one crawl, which reads each
-	// revision once.
-	var commits []analysis.Commit
-	var changes [][]change.FileChange
-	var unread []bool // the commit changes nothing the build reads
-	var files []*analysis.File
-	err = analysis.Walk(ctx, dir, args, o.note, func(c analysis.Commit, d string) {
-		all := change.Changes(cat, c.Hash, d)
-		// A file whose changed lines are all comments decides nothing.
-		code := slices.DeleteFunc(slices.Clone(all), func(ch change.FileChange) bool { return !ch.Code })
-		commits = append(commits, c)
-		changes = append(changes, code)
-		unread = append(unread, len(code) == 0 && buildUnread(d, all))
-		for _, ch := range code {
-			files = append(files, &analysis.File{File: kernel.File{Path: ch.Path, Header: ch.Header}, Region: ch.Region, Revs: c.Revs})
-		}
-	})
-	if err != nil {
-		return err
-	}
-	// The build the flags pick is the only one read, without the arch
-	// label and arches; without one, every build is, and the condition is
-	// x86-64's.
-	build := buildName(o)
-	found, err := analysis.Resolve(ctx, dir, files, analysis.Options{Build: build})
-	if err != nil {
-		return err
-	}
-	results := make([]commitResult, 0, len(commits))
-	for i, c := range commits {
-		r := commitResult{Commit: c.Hash}
-		var conds []builds.FileCond
-		var fas []builds.FileArches
-		for _, ch := range changes[i] {
-			res := found[0]
-			found = found[1:]
-			// The region is written as the build reads it, like the
-			// condition: X=y as X for a bool, MODULE and -D macros
-			// resolved. A revision without the build keeps the changed
-			// lines' region.
-			fc, region := res.Cond(build), ch.Region
-			if _, ok := res.Conds[cmp.Or(build, kernel.X86_64Build)]; ok {
-				region = fc.Region
-			}
-			c := changed{Path: ch.Path, Header: ch.Header, Region: region.String(), Functions: ch.Functions, Rev: res.Rev,
-				Status: fc.Status.String(), Kbuild: condText(fc.Kbuild)}
-			c.Arches, c.Unknown = res.Arches.Lists()
-			for name, b := range res.Conds {
-				if name == kernel.X86_64Build {
-					continue // the file's row shows it
-				}
-				if c.Builds == nil {
-					c.Builds = map[string]string{}
-				}
-				c.Builds[name] = b.Status.String()
-				if b.Kbuild != nil {
-					c.Builds[name] += " " + b.Kbuild.String()
-				}
-			}
-			r.Files = append(r.Files, c)
-			conds = append(conds, fc)
-			fas = append(fas, res.Arches)
-		}
-		e, unknown := builds.Combine(conds)
-		sum := builds.Summarize(fas)
-		if unread[i] {
-			e, unknown, sum.Label = kcond.Const(false), false, "none"
-		}
-		r.Condition, r.Unknown = condText(e), unknown
-		r.Label, r.Arches = sum.Label, sum.Arches
-		if cfg != nil {
-			r.Verdict = change.VerdictName(change.Verdict(e, unknown, cfg))
-		}
-		results = append(results, r)
 	}
 	if o.quiet {
 		return quiet(len(results), func(i int) string { return results[i].Verdict })
@@ -659,24 +557,6 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 			}
 		}
 	})
-}
-
-// buildUnread reports whether the build reads none of the files a diff
-// changes: each is outside the build, or a kernel file whose changed lines
-// are all comments, as changes tells.
-func buildUnread(diff string, changes []change.FileChange) bool {
-	comments := map[string]bool{}
-	for _, ch := range changes {
-		comments[ch.Path] = !ch.Code
-	}
-	for _, f := range unidiff.Files(diff) {
-		for _, p := range []string{f.OldPath, f.NewPath} {
-			if p != "" && !kernel.OutsideBuild(p) && !comments[p] {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // fileArches is what the builds say about one file.

@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/linux-analysis/kcond/analysis"
 )
 
 // capture runs the command and returns its output and exit code.
@@ -206,7 +208,7 @@ func TestSymbolsUnknown(t *testing.T) {
 func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	dir, fix := newKernel(t)
 	out, code := capture(t, "--tree", dir, "--json", "diff", fix)
-	var res []commitResult
+	var res []analysis.CommitResult
 	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 {
 		t.Fatalf("diff = %q, %d", out, code)
 	}
@@ -285,7 +287,7 @@ func TestDiffReadsMakefilesAtCommit(t *testing.T) {
 	git(t, dir, "commit", "-q", "-a", "-m", "c for b")
 	head := git(t, dir, "rev-parse", "HEAD")
 	out, code := capture(t, "--tree", dir, "--json", "--build", "x86_64", "diff", head)
-	var res []commitResult
+	var res []analysis.CommitResult
 	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || len(res[0].Files) != 2 {
 		t.Fatalf("diff = %q, %d", out, code)
 	}
@@ -380,7 +382,7 @@ func TestDiffBuild(t *testing.T) {
 		{nil, "", "arm64"},
 	} {
 		out, code := capture(t, append([]string{"--tree", dir, "--json", "diff", fix}, c.args...)...)
-		var res []commitResult
+		var res []analysis.CommitResult
 		if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 || res[0].Verdict != c.verdict || res[0].Label != c.label {
 			t.Errorf("diff %v = %q, %d; want %s, label %q", c.args, out, code, c.verdict, c.label)
 		}

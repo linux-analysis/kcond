@@ -21,7 +21,7 @@ type Commit struct {
 // against them was built from, so that the whole range takes one crawl.
 // A hash reads as its change to its first parent, and a range's merge as
 // its own change: the rest of what the merge brings is the range's other
-// commits. warn is told of a range without commits.
+// commits. warn, when not nil, is told of a range without commits.
 func Walk(ctx context.Context, dir string, args []string, warn func(msg string), f func(c Commit, diff string)) error {
 	for _, a := range args {
 		_, end, ok := strings.Cut(a, "..")
@@ -41,7 +41,7 @@ func Walk(ctx context.Context, dir string, args []string, warn func(msg string),
 		if err != nil {
 			return err
 		}
-		if len(hashes) == 0 {
+		if len(hashes) == 0 && warn != nil {
 			warn(a + " has no commits")
 		}
 		err = gitfs.Diffs(ctx, dir, hashes, func(i int, d string) {
