@@ -21,7 +21,6 @@ import (
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kernel"
-	"github.com/linux-analysis/kcond/source"
 )
 
 // Options selects what to crawl.
@@ -88,30 +87,19 @@ type Result struct {
 	bits    string          // x86 only
 	makes   map[string]bool // directories with a Makefile or Kbuild
 	// compiled lists how each listed source is compiled, with its
-	// object's flags; includers are the #include edges into each file.
+	// object's flags; includers are the #include edges into each .c, .S
+	// and Rust file. forced are the -include flags of LINUXINCLUDE, which
+	// every object gets.
 	compiled  map[string][]compilation
 	includers map[string][]edge
+	forced    []flag
 	// subdirFlags holds each directory's subdir-ccflags-y and
 	// subdir-asflags-y while the tree is crawled.
 	subdirFlags map[string][2][]flag
 
-	// A header is looked up when first asked about, in fsys; mu guards
-	// the lookups, so Lookup, Module and Define are safe for concurrent
-	// use. headers holds the condition of each header looked up, nil for
-	// one found unlisted; Files keeps to the sources. roots finds the
-	// files <...> names in the build's include directories, and included
-	// lists by header the sources whose objects compile it through an
-	// -include flag, made at the first lookup with defined, the macros
-	// the -D flags of the objects define (see indexFlags). forced are the
-	// -include flags of LINUXINCLUDE, which every object gets.
-	fsys     fs.FS
-	mu       sync.Mutex
-	headers  map[string]*kcond.Expr
-	parts    map[string][2]*kcond.Expr // a built header's condition in C and in assembly units
-	roots    *includeRoots
-	included map[string][]edge
-	forced   []flag
-	defined  map[string]bool
+	// The headers, which are looked up when first asked about (see
+	// headerIndex); everything above is fixed once Crawl returns.
+	lazy headerIndex
 }
 
 // flagKind tells what a compiler flag names.
@@ -136,163 +124,6 @@ type flag struct {
 type compilation struct {
 	cond, builtin, module *kcond.Expr
 	flags                 []flag
-}
-
-// Define returns the conditions under which source p is compiled with the
-// macro x a -D flag of its object defines, and without it. A file a source
-// #includes is compiled with that source's flags.
-func (r *Result) Define(p, x string) (set, unset *kcond.Expr) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// No object defines it: a region's #ifdef of a macro the headers
-	// define asks about every header, so the answer is read off.
-	if r.indexFlags(); !r.defined[x] {
-		e, st := r.lookup(p)
-		if st != Built {
-			e = kcond.Const(false)
-		}
-		return kcond.Const(false), e
-	}
-	nodes, e, many := r.reach(p)
-	if many {
-		return e, e
-	}
-	return r.fold(p, nodes, func(c compilation) (*kcond.Expr, *kcond.Expr) {
-		var fs []*kcond.Expr
-		for _, f := range c.flags {
-			if f.kind == defineMacro && f.arg == x {
-				fs = append(fs, f.cond)
-			}
-		}
-		with := kcond.Or(fs...)
-		return kcond.And(c.cond, with), kcond.And(c.cond, kcond.Not(with))
-	})
-}
-
-// fold ORs the two conditions f gives each compilation of source p, and
-// each of a file that #includes p, there under the directive's condition,
-// through the includers of the includers, nodes (see reach): the
-// conditions propagate up the include graph as directory conditions do,
-// each file once, where a header of thousands of includers has too many
-// paths to follow.
-func (r *Result) fold(p string, nodes map[string]bool, f func(compilation) (a, b *kcond.Expr)) (a, b *kcond.Expr) {
-	ra, rb := map[string]*kcond.Expr{}, map[string]*kcond.Expr{}
-	edges := map[string][]edge{}
-	for n := range nodes {
-		edges[n] = r.includers[n]
-		for _, c := range r.compiled[n] {
-			ca, cb := f(c)
-			ra[n], rb[n] = orExpr(ra[n], ca), orExpr(rb[n], cb)
-		}
-	}
-	a, b = kcond.Const(false), kcond.Const(false)
-	if c, ok := dirConditions(ra, edges, false)[p]; ok {
-		a = c
-	}
-	if c, ok := dirConditions(rb, edges, false)[p]; ok {
-		b = c
-	}
-	return a, b
-}
-
-// Module returns the conditions under which source p is compiled into the
-// kernel and into a module: obj-m lists its object and obj-y does not, as
-// Kbuild filters obj-m by obj-y, it is a member of such a composite, or
-// such a source includes it, and the other way round. A file compiled both
-// ways, as one source compiled on its own and #included into a module's,
-// has both. Each is false where it never holds.
-func (r *Result) Module(p string) (builtin, module *kcond.Expr) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	nodes, e, many := r.reach(p)
-	if many {
-		return e, kcond.And(e, kcond.Var("CONFIG_MODULES", kcond.Enabled))
-	}
-	return r.fold(p, nodes, func(c compilation) (*kcond.Expr, *kcond.Expr) { return c.builtin, c.module })
-}
-
-// maxFold bounds the sources whose compilations fold follows into a
-// header.
-const maxFold = 1000
-
-// reach returns p and the files that include it, directly or through
-// other files, a header looked up first, and for a header that more than
-// maxFold compiled sources include, many and its condition.
-// shortcut: the OR of the module or macro conditions of thousands of
-// sources is as slow to build as it is long to read, so such a header
-// reads as compiled either way wherever it is compiled, into a module
-// where modules are built; refine if a change under #ifdef MODULE in a
-// core header needs the exact condition.
-func (r *Result) reach(p string) (nodes map[string]bool, e *kcond.Expr, many bool) {
-	header := path.Ext(p) == ".h"
-	st := Unlisted
-	if header {
-		e, st = r.lookup(p)
-	}
-	nodes = map[string]bool{p: true}
-	for queue := []string{p}; len(queue) > 0; queue = queue[1:] {
-		for _, in := range r.includers[queue[0]] {
-			if !nodes[in.parent] {
-				nodes[in.parent] = true
-				queue = append(queue, in.parent)
-			}
-		}
-	}
-	if !header || st != Built {
-		return nodes, nil, false
-	}
-	n := 0
-	for f := range nodes {
-		if r.compiled[f] != nil {
-			n++
-		}
-	}
-	return nodes, e, n > maxFold
-}
-
-// indexFlags indexes the objects' flags at the first header or macro
-// lookup: by header, the sources compiling it through -include, every
-// compiled source for the flags of LINUXINCLUDE; and the macros some -D
-// flag defines.
-func (r *Result) indexFlags() {
-	if r.included != nil {
-		return
-	}
-	r.included, r.defined = map[string][]edge{}, map[string]bool{}
-	for src, cs := range r.compiled {
-		if ext := path.Ext(src); ext == ".c" || ext == ".S" {
-			for _, fl := range r.forced {
-				r.included[fl.arg] = append(r.included[fl.arg], edge{src, fl.cond})
-			}
-		}
-		for _, c := range cs {
-			for _, f := range c.flags {
-				switch {
-				case f.kind == includedFile && path.Ext(f.arg) == ".h":
-					r.included[f.arg] = append(r.included[f.arg], edge{src, f.cond})
-				case f.kind == defineMacro:
-					r.defined[f.arg] = true
-				}
-			}
-		}
-	}
-}
-
-// Lookup returns the condition of a source file or header. A header is
-// built where the files that #include it are compiled, each under the
-// condition of its directive's line, through other headers recursively:
-// the OR over its includers, which the #include lines of the tree, listed
-// at the first lookup, tell. A quoted name is found next to the including
-// file, a bracketed one in the build's include directories (see
-// includeRoots), either in the -I directories of the includer's object
-// otherwise, and a header an -include flag names is included by the
-// object's source, or by every one for the flags of LINUXINCLUDE. An
-// includer that is not built, or that no Makefile lists, adds nothing, as
-// for an included .c file. A header no listed file includes is unlisted.
-func (r *Result) Lookup(p string) (*kcond.Expr, Status) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lookup(p)
 }
 
 func (r *Result) lookup(p string) (*kcond.Expr, Status) {
@@ -341,156 +172,6 @@ func (r *Result) lookup(p string) (*kcond.Expr, Status) {
 		return nil, Unlisted
 	}
 	return nil, NotBuilt
-}
-
-// header looks a header up (see Lookup), memoizing the result in headers
-// and includers. The includers are scanned a level at a time: the files
-// including the header, then those including them. A header reached from
-// no built source stays unlisted rather than not built. The C and the
-// assembly units are kept apart, so that the __ASSEMBLY__ guards of the
-// directives resolve.
-func (r *Result) header(p string) (*kcond.Expr, Status) {
-	if e, ok := r.headers[p]; ok {
-		if e == nil {
-			return nil, Unlisted
-		}
-		return e, Built
-	}
-	if r.fsys == nil {
-		return nil, Unlisted
-	}
-	if r.roots == nil {
-		r.roots = newIncludeRoots(r.fsys, r.Arch)
-	}
-	r.indexFlags()
-	// roots are the conditions of the C and the assembly units reaching
-	// p: the built sources, and the headers looked up before, whose
-	// includers need no second scan.
-	var roots [2]map[string]*kcond.Expr
-	roots[0], roots[1] = map[string]*kcond.Expr{}, map[string]*kcond.Expr{}
-	edges := map[string][]edge{}
-	scanned := map[string]bool{p: true}
-	// includer records that f includes h under cond: a header to scan
-	// next, or a root.
-	var next map[string]bool
-	includer := func(h, f string, cond *kcond.Expr) {
-		edges[h] = append(edges[h], edge{f, cond})
-		if path.Ext(f) != ".h" {
-			if e, st := r.lookup(f); st == Built {
-				unit := 0
-				if path.Ext(f) == ".S" {
-					unit = 1
-				}
-				roots[unit][f] = e
-			}
-		} else if parts, ok := r.parts[f]; ok {
-			roots[0][f], roots[1][f] = parts[0], parts[1]
-		} else if _, done := r.headers[f]; !done && !scanned[f] {
-			scanned[f] = true
-			next[f] = true
-		}
-	}
-	for level := map[string]bool{p: true}; len(level) > 0; {
-		headers := slices.Sorted(maps.Keys(level))
-		files, err := r.Includes.includers(r.fsys, headers)
-		if err != nil {
-			// shortcut: Lookup reports no error, so a read that fails
-			// leaves the header unknown; report it if that misleads.
-			r.headers[p] = nil
-			return nil, Unlisted
-		}
-		next = map[string]bool{}
-		bases := map[string]bool{}
-		for _, h := range headers {
-			bases[path.Base(h)] = true
-		}
-		for _, f := range slices.Sorted(maps.Keys(files)) {
-			for _, d := range files[f] {
-				if !bases[d.base] {
-					continue
-				}
-				for _, t := range r.targets(f, d, level) {
-					includer(t.file, f, t.cond)
-				}
-			}
-		}
-		for _, h := range headers {
-			for _, e := range r.included[h] {
-				includer(h, e.parent, e.cond)
-			}
-		}
-		level = next
-	}
-	conds := map[string][2]*kcond.Expr{}
-	for i, asm := range []bool{false, true} {
-		es := map[string][]edge{}
-		for h, in := range edges {
-			for _, e := range in {
-				es[h] = append(es[h], edge{e.parent, kcond.With(e.cond, source.AssemblyAtom, asm)})
-			}
-		}
-		for h, c := range dirConditions(roots[i], es, false) {
-			parts := conds[h]
-			parts[i] = c
-			conds[h] = parts
-		}
-	}
-	for h := range scanned {
-		if parts, ok := conds[h]; ok {
-			for i, c := range parts {
-				if c == nil {
-					parts[i] = kcond.Const(false)
-				}
-			}
-			// Module and Define fold over both units at once.
-			in := make([]edge, len(edges[h]))
-			for i, e := range edges[h] {
-				in[i] = edge{e.parent, source.EitherUnit(e.cond)}
-			}
-			r.headers[h], r.parts[h], r.includers[h] = kcond.Or(parts[0], parts[1]), parts, in
-		}
-	}
-	if c, ok := r.headers[p]; ok {
-		return c, Built
-	}
-	r.headers[p] = nil
-	return nil, Unlisted
-}
-
-// target is a file an #include names, under the condition of its line
-// ANDed with that of the -I flag finding it.
-type target struct {
-	file string
-	cond *kcond.Expr
-}
-
-// targets returns the headers of level that directive d of file f names.
-func (r *Result) targets(f string, d incLine, level map[string]bool) []target {
-	if d.quoted {
-		if t, ok := resolveInclude(r.fsys, path.Dir(f), d.name); ok {
-			if level[t] {
-				return []target{{t, d.cond}}
-			}
-			return nil // another file of that name is nearer
-		}
-	}
-	// The build's include directories come before an object's own -I
-	// flags.
-	if t, ok := r.roots.find(d.name); ok {
-		if level[t] {
-			return []target{{t, d.cond}}
-		}
-		return nil
-	}
-	// shortcut: a header has no object of its own, so the -I directories
-	// of the objects including it are not searched for its directives.
-	var out []target
-	for _, t := range r.includeDirs(f, d.name, d.cond) {
-		if level[t.file] {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // includeDirs returns the files the -I directories of the objects compiled
@@ -598,7 +279,7 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	pre := map[string]string{"srctree": ".", "objtree": ".", "SRCARCH": arch, "ARCH": arch}
 	r := &Result{Arch: arch, Files: map[string]*kcond.Expr{}, reached: map[string]bool{},
 		makes: map[string]bool{}, compiled: map[string][]compilation{}, subdirFlags: map[string][2][]flag{},
-		fsys: fsys, headers: map[string]*kcond.Expr{}, parts: map[string][2]*kcond.Expr{}}
+		lazy: headerIndex{fsys: fsys, conds: map[string]*kcond.Expr{}, parts: map[string][2]*kcond.Expr{}, includers: map[string][]edge{}}}
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && (d.Name() == "Makefile" || d.Name() == "Kbuild") {
 			r.makes[path.Dir(p)] = true
