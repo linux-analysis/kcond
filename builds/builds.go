@@ -392,11 +392,7 @@ func FileArch(path string, header bool, region *kcond.Expr, b Build) ArchVerdict
 // AlwaysBuilt reports whether a changed file is built in every
 // configuration of b: a source listed under a condition that always holds,
 // or a header whose changed lines are under a CONFIG_ condition that does.
-// For x86 only the x86-64 build decides; the i386 one never does.
 func AlwaysBuilt(path string, header bool, region *kcond.Expr, b Build) bool {
-	if b.Arch == "x86" && !b.X86_64 {
-		return false
-	}
 	t, _ := term(path, header, region, b)
 	return t != nil && b.Values.Always(free(t, b.Defined))
 }
@@ -422,7 +418,8 @@ func (f *FileArches) Add(b Build, region *kcond.Expr) {
 		v = old
 	}
 	f.Verdicts[b.Arch] = v
-	if AlwaysBuilt(f.Path, f.Header, region, b) {
+	// For x86 only the x86-64 build decides; the i386 one never does.
+	if (b.X86_64 || b.Arch != "x86") && AlwaysBuilt(f.Path, f.Header, region, b) {
 		f.Always = append(f.Always, b.Arch)
 	}
 	if !slices.Contains(f.Present, b.Arch) {

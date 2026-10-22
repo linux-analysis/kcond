@@ -1,6 +1,8 @@
 package builds
 
 import (
+	"slices"
+
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
 )
@@ -35,46 +37,46 @@ type FileCond struct {
 	Region *kcond.Expr
 }
 
-// Combine is the condition of a change given its files. Sources, and
-// headers built where the files including them are, count with their
-// Kbuild condition ANDed with their region; a source that is not built
-// contributes false, and one whose condition is unknown sets unknown. The
-// other headers have no Kbuild condition and count only when no source
-// changed, a built header being no source, through their region when it
-// names a Kconfig symbol or is never compiled. cond is nil when no file has
-// a known condition.
+// Combine is the condition of a change given its files: the OR of what
+// each contributes (see Term). cond is nil when no file has a known
+// condition.
 func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
+	sources := slices.ContainsFunc(files, func(f FileCond) bool { return !f.Header })
 	var terms []*kcond.Expr
-	sources := false
 	for _, f := range files {
-		if f.Header && f.Status != StatusBuilt {
-			continue
-		}
-		sources = sources || !f.Header
-		switch f.Status {
-		case StatusBuilt:
-			terms = append(terms, kcond.And(f.Kbuild, f.Region))
-		case StatusNotBuilt:
-			terms = append(terms, kcond.Const(false))
-		default:
+		switch e, ok := Term(f, sources); {
+		case !ok:
+		case e == nil:
 			unknown = true
-		}
-	}
-	if !sources {
-		for _, f := range files {
-			switch {
-			case f.Status == StatusBuilt: // counted above
-			case f.Status == StatusNotBuilt || f.Region.IsConst(false):
-				terms = append(terms, kcond.Const(false))
-			case len(f.Region.Symbols()) > 0:
-				terms = append(terms, f.Region)
-			default:
-				unknown = true
-			}
+		default:
+			terms = append(terms, e)
 		}
 	}
 	if len(terms) == 0 {
 		return nil, true
 	}
 	return kcond.Or(terms...), unknown
+}
+
+// Term is what a changed file contributes to the condition of its change,
+// sources telling whether the change has a source among its files. Sources,
+// and headers built where the files including them are, contribute their
+// Kbuild condition ANDed with their region; a source that is not built
+// contributes false, and one whose condition is unknown nil. The other
+// headers have no Kbuild condition and count only when no source changed,
+// a built header being no source, through their region when it names a
+// Kconfig symbol or is never compiled; ok is false for one that does not
+// count.
+func Term(f FileCond, sources bool) (e *kcond.Expr, ok bool) {
+	switch {
+	case f.Status == StatusBuilt:
+		return kcond.And(f.Kbuild, f.Region), true
+	case f.Header && sources:
+		return nil, false
+	case f.Status == StatusNotBuilt || f.Header && f.Region.IsConst(false):
+		return kcond.Const(false), true
+	case f.Header && len(f.Region.Symbols()) > 0:
+		return f.Region, true
+	}
+	return nil, true
 }
