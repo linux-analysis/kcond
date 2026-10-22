@@ -313,14 +313,15 @@ func buildName(o opts) string {
 // each calls f with each build of the tree, or only the one buildName
 // gives; lookups are the files f looks up.
 func each(fsys fs.FS, o opts, lookups []string, f func(builds.Build) error) error {
+	s := builds.NewSession(fsys, lookups)
 	build := buildName(o)
 	if build == "" {
-		return builds.Each(fsys, nil, lookups, func(b builds.Build) error {
+		return s.Builds(func(b builds.Build) error {
 			warn(o, b)
 			return f(b)
 		})
 	}
-	b, ok := builds.Named(fsys, build, lookups)
+	b, ok := s.Build(build)
 	if !ok {
 		return fmt.Errorf("the tree has no %s build", build)
 	}
@@ -761,7 +762,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 		f, _ := kernel.FileOf(p)
 		fas[i] = builds.FileArches{File: f}
 	}
-	err = builds.Each(fsys, nil, paths, func(b builds.Build) error {
+	err = builds.NewSession(fsys, paths).Builds(func(b builds.Build) error {
 		warn(o, b)
 		for i := range fas {
 			fas[i].Add(b, b.Eval(fas[i].File, kcond.Const(true)))
@@ -922,7 +923,7 @@ func oneBuild(fsys fs.FS, o opts) (builds.Build, error) {
 	if name == "" {
 		name = kernel.X86_64Build
 	}
-	b, ok := builds.Named(fsys, name, nil)
+	b, ok := builds.NewSession(fsys, nil).Build(name)
 	if !ok {
 		return builds.Build{}, fmt.Errorf("the tree has no %s build", name)
 	}

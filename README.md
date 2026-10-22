@@ -163,14 +163,14 @@ import (
 )
 
 tree, err := gitfs.Open(ctx, dir, "v6.12")  // an fs.FS; gitfs.WorkTree reads a checkout
-b, ok := builds.Named(tree, "x86_64")        // the Makefile crawl and the Kconfig analysis
+b, ok := builds.NewSession(tree, nil).Build("x86_64") // the Makefile crawl and the Kconfig analysis
 fc := b.Eval(kernel.File{Path: path}, kcond.Const(true))   // Status, Kbuild, Region
 e, err := kcond.Parse("CONFIG_A && !CONFIG_B")
 f, err := dotconfig.Read(data)               // Config, Version, Build
 v := e.Eval(f.Config)                        // kcond.True, False or Unknown
 ```
 
-`builds.Each` walks every build of a tree; `change.Changes` reads the
+`Session.Builds` walks every build of a tree; `change.Changes` reads the
 files and regions a commit's diff touches, `builds.Combine` and
 `builds.Summarize` turn them into one condition and an architecture
 label, and `crawl.Resolve` does that for many files across revisions,

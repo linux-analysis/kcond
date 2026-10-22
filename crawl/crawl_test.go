@@ -122,6 +122,7 @@ func TestResolve(t *testing.T) {
 func TestRevGrepError(t *testing.T) {
 	linux := newKernel(t)
 	commitFile(t, linux, "Makefile", "core-y := lib/\n", "kbuild")
+	commitFile(t, linux, "arch/x86/Kconfig", "config X86\n\tdef_bool y\n", "x86")
 	commitFile(t, linux, "lib/Makefile", "obj-y += a.o\n", "lib")
 	commitFile(t, linux, "lib/a.c", "int a;\n", "a")
 	commitFile(t, linux, "lib/b.c", "#include \"a.c\"\n", "b")

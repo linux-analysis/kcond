@@ -206,8 +206,9 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 	for _, i := range found {
 		paths = append(paths, files[i].Path)
 	}
+	s := builds.NewSession(tree, paths)
 	if build != "" {
-		b, ok := builds.Named(tree, build, paths)
+		b, ok := s.Build(build)
 		switch {
 		case errors.Is(b.Err, kbuild.ErrNoMakefile):
 			return nil, nil
@@ -218,13 +219,18 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 		}
 		return results, add(b, false)
 	}
-	res, err := kbuild.Crawl(tree, kbuild.Options{Arch: kernel.Primary, Lookups: paths})
+	// The x86-64 build comes first; its crawl failing fails the revision.
+	err = s.Builds(func(b builds.Build) error {
+		if b.Kbuild == nil && (b.X86_64 || errors.Is(b.Err, kbuild.ErrNoMakefile)) {
+			return b.Err // no top-level Makefile, or e.g. the #include scan failed
+		}
+		return add(b, true)
+	})
 	if errors.Is(err, kbuild.ErrNoMakefile) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err // e.g. the #include scan failed
+		return nil, err
 	}
-	err = builds.Each(tree, res, nil, func(b builds.Build) error { return add(b, true) })
-	return results, err
+	return results, nil
 }

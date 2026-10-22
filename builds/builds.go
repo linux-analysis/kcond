@@ -111,63 +111,67 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 	return kconfig.Analyze(tr, KconfigOptions()), nil
 }
 
-// Each calls f with each build of the label arches the tree has, one at
-// a time so that only one crawl is held: the x86-64 build first, reusing
-// x86 when it is not nil, then i386, then the other arches in kernel.LabelArches
-// order. A build whose crawl or Kconfig fails is passed with that field
-// nil and Err saying why, so its files stay unknown rather than its arch
-// absent. The crawls
-// share one scan of the tree's #include directives, x86's when given.
-// lookups are the files f will look up (see kbuild.Options).
-func Each(fsys fs.FS, x86 *kbuild.Result, lookups []string, f func(Build) error) error {
-	defined, err := Defined(fsys)
-	if err != nil {
-		return err
+// Session reads the builds of one tree. The CONFIG_ symbols the tree's
+// Kconfig files define are listed once, and the crawls share one scan of
+// the tree's #include directives, the first crawl's. A Session is not
+// safe for concurrent use.
+type Session struct {
+	fsys    fs.FS
+	lookups []string
+	inc     *kbuild.Includes
+
+	listed     sync.Once
+	defined    map[string]bool
+	definedErr error
+}
+
+// NewSession reads the builds of the tree in fsys; lookups are the files
+// the caller will look up (see kbuild.Options).
+func NewSession(fsys fs.FS, lookups []string) *Session {
+	return &Session{fsys: fsys, lookups: lookups}
+}
+
+// Build returns the build named name (one of kernel.ConfigBuilds), its
+// crawl and its Kconfig analysis run at once; ok is false when the tree has
+// no such architecture. A crawl, Kconfig or listing of the defined symbols
+// that fails leaves its field nil and Err saying why, so that the files
+// of its arch stay unknown rather than the arch absent.
+func (s *Session) Build(name string) (b Build, ok bool) {
+	sp, ok := specOf(s.fsys, name)
+	if !ok {
+		return Build{}, false
 	}
-	var inc *kbuild.Includes
-	for _, sp := range buildSpecs(fsys) {
-		b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == kernel.X86_64Build, Defined: defined}
-		sp.opts.Includes, sp.opts.Lookups = inc, lookups
-		var crawlErr, kconfigErr error
-		if b.X86_64 && x86 != nil {
-			b.Kbuild, inc = x86, x86.Includes
-		} else if res, err := kbuild.Crawl(fsys, sp.opts); err == nil {
-			b.Kbuild, inc = res, res.Includes
-		} else {
-			crawlErr = err
-		}
-		b.Values, kconfigErr = sp.values(fsys)
-		b.Err = errors.Join(crawlErr, kconfigErr)
-		if err := f(b); err != nil {
+	return s.build(sp), true
+}
+
+// Builds calls f with each build of the label arches the tree has, as
+// Build returns it, one at a time so that only one crawl is held: the
+// x86-64 build first, then i386, then the other arches in
+// kernel.LabelArches order.
+func (s *Session) Builds(f func(Build) error) error {
+	for _, sp := range buildSpecs(s.fsys) {
+		if err := f(s.build(sp)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Named returns the build named name (one of kernel.ConfigBuilds) of the tree,
-// its crawl and its Kconfig analysis run at once. ok is false when the
-// tree has no such architecture; a crawl or Kconfig that fails leaves its
-// field nil and Err saying why. lookups are the files the caller will look
-// up (see kbuild.Options).
-func Named(fsys fs.FS, name string, lookups []string) (b Build, ok bool) {
-	sp, ok := specOf(fsys, name)
-	if !ok {
-		return Build{}, false
-	}
-	sp.opts.Lookups = lookups
-	b = Build{Arch: sp.arch, Name: name, X86_64: name == kernel.X86_64Build}
+func (s *Session) build(sp buildSpec) Build {
+	b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == kernel.X86_64Build}
+	sp.opts.Includes, sp.opts.Lookups = s.inc, s.lookups
 	var analysis sync.WaitGroup
-	var kconfigErr, definedErr error
-	analysis.Go(func() { b.Values, kconfigErr = sp.values(fsys) })
-	analysis.Go(func() { b.Defined, definedErr = Defined(fsys) })
-	res, crawlErr := kbuild.Crawl(fsys, sp.opts)
+	var kconfigErr error
+	analysis.Go(func() { b.Values, kconfigErr = sp.values(s.fsys) })
+	analysis.Go(func() { s.listed.Do(func() { s.defined, s.definedErr = Defined(s.fsys) }) })
+	res, crawlErr := kbuild.Crawl(s.fsys, sp.opts)
 	if crawlErr == nil {
-		b.Kbuild = res
+		b.Kbuild, s.inc = res, res.Includes
 	}
 	analysis.Wait()
-	b.Err = errors.Join(crawlErr, kconfigErr, definedErr)
-	return b, true
+	b.Defined = s.defined
+	b.Err = errors.Join(crawlErr, kconfigErr, s.definedErr)
+	return b
 }
 
 var configDef = regexp.MustCompile(`(?m)^\s*(?:menu)?config\s+([A-Za-z0-9_]+)`)

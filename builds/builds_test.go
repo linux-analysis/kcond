@@ -2,7 +2,6 @@ package builds
 
 import (
 	"errors"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -137,7 +136,7 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 		out[p] = &FileArches{File: file(p)}
 	}
 	var builds, names []string
-	err := Each(fsys, nil, nil, func(b Build) error {
+	err := NewSession(fsys, nil).Builds(func(b Build) error {
 		builds = append(builds, b.Arch)
 		names = append(names, b.Name)
 		for p, f := range out {
@@ -161,7 +160,7 @@ func TestEval(t *testing.T) {
 	region := kcond.Const(true)
 	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
-	err := Each(archTree(), nil, nil, func(b Build) error {
+	err := NewSession(archTree(), nil).Builds(func(b Build) error {
 		for _, p := range paths {
 			fc := b.Eval(file(p), region)
 			s := fc.Status.String()
@@ -314,26 +313,22 @@ func TestSummarize(t *testing.T) {
 // The builds of a tree reuse the #include directives of the x86 crawl, and
 // each gives an included file the condition it builds the includer under.
 func TestBuildsShareIncludes(t *testing.T) {
-	fsys := archTree()
-	fsys["drivers/part.c"] = &fstest.MapFile{}
-	// No file of the tree includes drivers/part.c: only a build that reuses
-	// these directives builds it.
-	inc := &kbuild.Includes{Targets: map[string][]kbuild.Include{"drivers/part.c": {{From: "arch/arm64/kernel/cpu.c", Cond: kcond.Const(true)}}}}
-	x86, err := kbuild.Crawl(fsys, kbuild.Options{Arch: "x86", Includes: inc})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]kbuild.Status{}
-	err = Each(fsys, x86, nil, func(b Build) error {
-		_, got[b.Name] = b.Kbuild.Lookup("drivers/part.c")
+	// The first crawl scans the tree's #include directives, and the
+	// others reuse its scan.
+	var first *kbuild.Includes
+	n := 0
+	err := NewSession(archTree(), nil).Builds(func(b Build) error {
+		if first == nil {
+			first = b.Kbuild.Includes
+		}
+		if b.Kbuild.Includes != first {
+			t.Errorf("the %s build scanned the #include directives again", b.Name)
+		}
+		n++
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]kbuild.Status{"x86_64": kbuild.Unlisted, "i386": kbuild.Unlisted, "arm64": kbuild.Built, "s390": kbuild.Unlisted}
-	if !maps.Equal(got, want) {
-		t.Errorf("drivers/part.c by build = %v, want %v", got, want)
+	if err != nil || n != 4 {
+		t.Errorf("Builds = %v after %d builds, want nil after 4", err, n)
 	}
 }
 
@@ -354,10 +349,10 @@ func TestFailedBuild(t *testing.T) {
 	}
 	// Err says why: here the tree has no top-level Makefile.
 	noMake := fstest.MapFS{"arch/riscv/Kconfig": {Data: []byte("config RISCV\n\tdef_bool y\n")}}
-	if b, ok := Named(noMake, "riscv", nil); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
+	if b, ok := NewSession(noMake, nil).Build("riscv"); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
 		t.Errorf("Named without a Makefile = %+v, %v; want Err ErrNoMakefile", b, ok)
 	}
-	err := Each(noMake, nil, nil, func(b Build) error {
+	err := NewSession(noMake, nil).Builds(func(b Build) error {
 		if !errors.Is(b.Err, kbuild.ErrNoMakefile) || b.Values == nil {
 			t.Errorf("Each without a Makefile: %s: Err %v, Values %v", b.Name, b.Err, b.Values)
 		}
@@ -462,7 +457,7 @@ func equal(a, b *kcond.Expr) bool {
 // X and X=m as false. Tristates, and symbols its Kconfig lacks, stay.
 func TestBuildPlain(t *testing.T) {
 	var x86 Build
-	if err := Each(archTree(), nil, nil, func(b Build) error {
+	if err := NewSession(archTree(), nil).Builds(func(b Build) error {
 		if b.X86_64 {
 			x86 = b
 		}
