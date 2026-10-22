@@ -244,7 +244,7 @@ func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
 		return nil, ArchMaybe
 	}
 	if fc.Header && fc.found != kbuild.Built {
-		e, _ := Term(FileCond{File: fc.File, Status: StatusHeader, Region: fc.region}, false)
+		e := Term(FileCond{File: fc.File, Status: StatusHeader, Region: fc.region})
 		switch {
 		case e == nil:
 			return nil, ArchMaybe
@@ -347,8 +347,9 @@ type ArchSummary struct {
 	Label  string
 }
 
-// Summarize combines the files of a change the way Combine does: sources
-// count, headers only when no source changed. The label covers the label
+// Summarize combines the files that count in a change (see Counted), each
+// with the arches of its lines that count, as Combine combines their
+// conditions. The label covers the label
 // arches present at the files' revisions: generic when every one but
 // kernel.OptionalArch may build the code, the arch's name when only one does,
 // several otherwise; other when every counted path is under an
@@ -356,15 +357,11 @@ type ArchSummary struct {
 // and "" when no file was analysed.
 func Summarize(files []FileArches) ArchSummary {
 	s := ArchSummary{Arches: []string{}, Unknown: []string{}, Always: []string{}}
-	sources := slices.ContainsFunc(files, func(f FileArches) bool { return !f.Header })
 	yes, maybe, present, always := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	found, labelPath := false, false // labelPath: a counted path outside arch/ or under a label arch
 	for _, f := range files {
 		for _, a := range f.Present {
 			present[a] = true
-		}
-		if !Labelled(f.File, sources) {
-			continue
 		}
 		pa := kernel.PathArch(f.Path)
 		labelPath = labelPath || pa == "" || slices.Contains(kernel.LabelArches, pa)

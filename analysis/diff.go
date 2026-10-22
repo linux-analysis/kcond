@@ -54,7 +54,8 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 	// revision once.
 	var commits []Commit
 	var changes [][]change.FileChange
-	var unread []bool // the commit changes nothing the build reads
+	var counted [][]bool // changes[i][j] counts in its commit (see builds.Counted)
+	var unread []bool    // the commit changes nothing the build reads
 	var files []*File
 	err = Walk(ctx, dir, args, o.Warn, func(c Commit, d string) {
 		all := change.Changes(cat, c.Hash, d)
@@ -63,9 +64,18 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 		commits = append(commits, c)
 		changes = append(changes, code)
 		unread = append(unread, len(code) == 0 && Unread(d, all))
-		for _, ch := range code {
-			files = append(files, &File{File: kernel.File{Path: ch.Path, Header: ch.Header}, Region: ch.Region, Revs: c.Revs})
+		sources := slices.ContainsFunc(code, func(ch change.FileChange) bool { return !ch.Header })
+		counts := make([]bool, len(code))
+		for j, ch := range code {
+			f := &File{File: kernel.File{Path: ch.Path, Header: ch.Header}, Region: ch.Region, Revs: c.Revs}
+			terms := builds.Counted(f.File, ch.Terms, sources)
+			if len(terms) > 0 && len(terms) < len(ch.Terms) {
+				f.Count = kcond.Or(terms...)
+			}
+			counts[j] = len(terms) > 0
+			files = append(files, f)
 		}
+		counted = append(counted, counts)
 	})
 	if err != nil {
 		return nil, err
@@ -80,7 +90,7 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 		r := CommitResult{Commit: c.Hash}
 		var conds []builds.FileCond
 		var fas []builds.FileArches
-		for _, ch := range changes[i] {
+		for j, ch := range changes[i] {
 			res := found[0]
 			found = found[1:]
 			// The region is written as the build reads it, like the
@@ -107,8 +117,10 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 				}
 			}
 			r.Files = append(r.Files, c)
-			conds = append(conds, fc)
-			fas = append(fas, res.Arches)
+			if counted[i][j] {
+				conds = append(conds, res.Counted(build))
+				fas = append(fas, res.CountedArches())
+			}
 		}
 		e, unknown := builds.Combine(conds)
 		sum := builds.Summarize(fas)

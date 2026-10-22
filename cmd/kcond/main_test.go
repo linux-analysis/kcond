@@ -660,3 +660,34 @@ func TestCondHeader(t *testing.T) {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
 }
+
+// Next to a source, a header counts only through its changed lines under
+// a CONFIG_ condition: the options of the sources decide the change, and a
+// common header's own lines, read wherever its includers are, do not.
+func TestDiffHeaderNextToSource(t *testing.T) {
+	dir, _ := newKernel(t)
+	commitFile(t, dir, "lib/a.c", "#include <linux/x.h>\nint a = 1;\n")
+	commitFile(t, dir, "include/linux/x.h", "int x(void);\n#ifdef CONFIG_MODULES\nint xm(void);\n#endif\n")
+	both := func(b, x string) string {
+		for name, content := range map[string]string{"lib/b.c": b, "include/linux/x.h": x} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "add", name)
+		}
+		git(t, dir, "commit", "-q", "-m", "b and x")
+		return git(t, dir, "rev-parse", "HEAD")
+	}
+	common := both("/* b */\nint b = 2;\n", "int x(int);\n#ifdef CONFIG_MODULES\nint xm(void);\n#endif\n")
+	guarded := both("/* b */\nint b = 3;\n", "int x(int);\n#ifdef CONFIG_MODULES\nint xm(int);\n#endif\n")
+	out, code := capture(t, "--tree", dir, "diff", common, guarded)
+	want := common + "\tx86\tCONFIG_B\n" +
+		"  include/linux/x.h\tbuilt\tCONFIG_A\tregion true\tarches x86,arm64\n" +
+		"  lib/b.c\tbuilt\tCONFIG_B\tregion true\tarches x86\n" +
+		guarded + "\tx86\t(CONFIG_A && CONFIG_MODULES) || CONFIG_B\n" +
+		"  include/linux/x.h\tbuilt\tCONFIG_A\tregion CONFIG_MODULES\tarches x86\n" +
+		"  lib/b.c\tbuilt\tCONFIG_B\tregion true\tarches x86\n"
+	if code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+}

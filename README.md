@@ -68,10 +68,15 @@ one build; without them every build is read, the condition is x86_64's,
 and the architectures that may build the change are listed. The commit
 line carries the verdict with `--config`, the arch label without it, and
 the condition; the file rows follow indented, so `grep -v '^ '` is the
-one-line view:
+one-line view. The options of the sources a commit changes decide it:
+next to a source, a header counts only through its changed lines under a
+`CONFIG_` condition of its own, an `#ifdef` or `IS_ENABLED()`, as its
+other lines are read wherever the files including it are. Here the
+bonding driver's `CONFIG_BONDING` decides, not the drivers that include
+`bond_options.h`:
 
     $ kcond diff 8eb36164d1a6
-    8eb36164d1a6	generic	CONFIG_BONDING || (CONFIG_CHELSIO_T4 && CONFIG_ETHERNET && CONFIG_NET_VENDOR_CHELSIO) || ... || CONFIG_INFINIBAND
+    8eb36164d1a6	generic	CONFIG_BONDING
       drivers/net/bonding/bond_main.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
       drivers/net/bonding/bond_options.c	built	CONFIG_BONDING	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch
       include/net/bond_options.h	built	CONFIG_BONDING || (CONFIG_CHELSIO_T4 && CONFIG_ETHERNET && CONFIG_NET_VENDOR_CHELSIO) || ... || CONFIG_INFINIBAND	region true	arches x86,arm64,arm,powerpc,s390,riscv,loongarch

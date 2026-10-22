@@ -6,6 +6,7 @@
 package analysis
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io/fs"
@@ -24,7 +25,10 @@ import (
 type File struct {
 	kernel.File
 	Region *kcond.Expr // the condition of the changed lines
-	Revs   []string    // the revisions to read the Makefiles from, in order
+	// Count is the condition of the changed lines that count in the
+	// change (see builds.Counted), when it is not Region.
+	Count *kcond.Expr
+	Revs  []string // the revisions to read the Makefiles from, in order
 }
 
 // Result is what the crawl found for a file.
@@ -33,9 +37,13 @@ type Result struct {
 	// file's Revs that has it, or "" when none does.
 	Rev string
 	// Conds holds the file's conditions in the builds read at Rev, by
-	// name.
-	Conds  map[string]builds.FileCond
-	Arches builds.FileArches
+	// name, and counts those of its lines that count in the change, when
+	// the file has a Count; countArches are the arches of those lines.
+	Conds       map[string]builds.FileCond
+	Arches      builds.FileArches
+	counts      map[string]builds.FileCond
+	count       *kcond.Expr
+	countArches builds.FileArches
 
 	// before is what is known of the file without a revision: a header
 	// whose includers are not known has the status header, one of another
@@ -61,6 +69,28 @@ func (r Result) Cond(build string) builds.FileCond {
 	return builds.FileCond{File: r.before.File, Status: builds.StatusUnlisted, Region: kcond.Const(true)}
 }
 
+// CountedArches are the arches of the file's lines that count in the
+// change, as Arches are the file's.
+func (r Result) CountedArches() builds.FileArches {
+	if r.count != nil {
+		return r.countArches
+	}
+	return r.Arches
+}
+
+// Counted is the condition in build of the file's lines that count in the
+// change, as Cond gives the file's.
+func (r Result) Counted(build string) builds.FileCond {
+	if fc, ok := r.counts[cmp.Or(build, kernel.X86_64Build)]; ok {
+		return fc
+	}
+	fc := r.Cond(build)
+	if r.count != nil && fc.Status != builds.StatusUnlisted {
+		fc.Region = r.count // what is known without a revision
+	}
+	return fc
+}
+
 // Options tune a Resolve or a Diff.
 type Options struct {
 	Workers  int               // revisions crawled at once; 4 when 0
@@ -79,7 +109,8 @@ const defaultWorkers = 4
 
 // initial is what is known of a file before any revision is read.
 func initial(f *File) Result {
-	r := Result{before: builds.FileCond{File: f.File, Region: f.Region}, Arches: builds.FileArches{File: f.File}}
+	r := Result{before: builds.FileCond{File: f.File, Region: f.Region}, Arches: builds.FileArches{File: f.File},
+		count: f.Count, countArches: builds.FileArches{File: f.File}}
 	if f.Header {
 		r.before.Status = builds.StatusHeader
 		if pa := kernel.PathArch(f.Path); pa != "" && pa != kernel.Primary {
@@ -213,6 +244,16 @@ func Rev(ctx context.Context, dir, rev string, files []*File, build string) ([]R
 			fc := b.Eval(f.File, f.Region)
 			if arches {
 				r.Arches.Add(b, fc)
+			}
+			if f.Count != nil {
+				cc := b.Eval(f.File, f.Count)
+				if r.counts == nil {
+					r.counts = map[string]builds.FileCond{}
+				}
+				r.counts[b.Name] = cc
+				if arches {
+					r.countArches.Add(b, cc)
+				}
 			}
 			if r.Conds == nil {
 				r.Conds = map[string]builds.FileCond{}

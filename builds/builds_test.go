@@ -287,19 +287,13 @@ func TestSummarize(t *testing.T) {
 		{"one arch", sum("drivers/msm.c"), "arm64", "arm64", "", false},
 		{"several", sum("drivers/forced.c", "arch/s390/kernel/setup.c"), "x86,s390", "several", "x86,s390", false},
 		{"always on one of two", sum("drivers/forced.c", "drivers/msm.c"), "x86,arm64", "generic", "x86", false},
-		// Headers count only when no source changed.
-		{"header ignored", sum("drivers/msm.c", "include/linux/wifi.h"), "arm64", "arm64", "", false},
 		{"header only", sum("include/linux/wifi.h"), "x86,arm64,s390", "generic", "", true},
 		{"special rules", sum("arch/x86/entry/vdso/vclock.c"), "x86", "x86", "", true},
 		{"none", sum("drivers/dead.c"), "", "none", "", false},
 		{"other arch", sum("arch/mips/kernel/setup.c"), "", "other", "", false},
-		// A header left out next to sources does not make it none.
-		{"other arch and header", sum("arch/mips/kernel/setup.c", "include/linux/wifi.h"), "", "other", "", false},
 		// A file never found makes the result uncertain.
 		{"missing file", sum("drivers/msm.c", "drivers/gone.c"), "arm64", "arm64", "", true},
 		{"nothing analysed", sum("drivers/gone.c"), "", "", "", true},
-		// A header found does not stand in for the change's sources.
-		{"source never found", sum("drivers/gone.c", "include/linux/wifi.h"), "", "", "", true},
 		{"no files", sum(), "", "", "", false},
 	} {
 		got, always := strings.Join(tc.s.Arches, ","), strings.Join(tc.s.Always, ",")

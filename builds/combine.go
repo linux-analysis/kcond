@@ -38,19 +38,17 @@ type FileCond struct {
 	kbuild, region *kcond.Expr
 }
 
-// Combine is the condition of a change given its files: the OR of what
-// each contributes (see Term). cond is nil when no file has a known
+// Combine is the condition of a change given the files that count in it
+// (see Counted), each with the region of its lines that count: the OR of
+// what each contributes (see Term). cond is nil when no file has a known
 // condition.
 func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
-	sources := slices.ContainsFunc(files, func(f FileCond) bool { return !f.Header })
 	var terms []*kcond.Expr
 	for _, f := range files {
-		switch e, ok := Term(f, sources); {
-		case !ok:
-		case e == nil:
-			unknown = true
-		default:
+		if e := Term(f); e != nil {
 			terms = append(terms, e)
+		} else {
+			unknown = true
 		}
 	}
 	if len(terms) == 0 {
@@ -59,33 +57,36 @@ func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
 	return kcond.Or(terms...), unknown
 }
 
-// Term is what a changed file contributes to the condition of its change,
-// sources telling whether the change has a source among its files. Sources,
-// and headers built where the files including them are, contribute their
-// Kbuild condition ANDed with their region; a source that is not built
-// contributes false, and one whose condition is unknown nil. The other
-// headers have no Kbuild condition and count only when no source changed,
-// a built header being no source, through their region when it names a
-// Kconfig symbol or is never compiled; ok is false for one that does not
-// count.
-func Term(f FileCond, sources bool) (e *kcond.Expr, ok bool) {
+// Term is what a changed file contributes to the condition of its change.
+// Sources, and headers built where the files including them are,
+// contribute their Kbuild condition ANDed with their region; a source that
+// is not built contributes false, and one whose condition is unknown nil.
+// The other headers have no Kbuild condition and contribute their region
+// when it names a Kconfig symbol or is never compiled, and nil otherwise.
+func Term(f FileCond) *kcond.Expr {
 	switch {
 	case f.Status == StatusBuilt:
-		return kcond.And(f.Kbuild, f.Region), true
-	case f.Header && sources:
-		return nil, false
+		return kcond.And(f.Kbuild, f.Region)
 	case f.Status == StatusNotBuilt || f.Header && f.Region.IsConst(false):
-		return kcond.Const(false), true
+		return kcond.Const(false)
 	case f.Header && len(f.Region.Symbols()) > 0:
-		return f.Region, true
+		return f.Region
 	}
-	return nil, true
+	return nil
 }
 
-// Labelled tells whether a changed file's architectures count in the arch
-// label of its change (see Summarize), sources telling whether the change
-// has a source among its files: a header next to a source does not, even
-// one whose includers build it, which counts in the condition (see Term).
-func Labelled(f kernel.File, sources bool) bool {
-	return !(f.Header && sources)
+// Counted returns the conditions of the changed lines of a file that count
+// in its change, terms being those of all its changed lines and sources
+// telling whether a source of the change changes code; none when no line
+// counts. A change to a source is decided by the options
+// of its sources: next to one, a header counts only through its lines
+// under a CONFIG_ condition, an #ifdef or IS_ENABLED() of its own, as a
+// header's other lines are read wherever the files including it are,
+// which says nothing of the change. Every line of a source counts, and
+// every line of a header when no source changes.
+func Counted(f kernel.File, terms []*kcond.Expr, sources bool) []*kcond.Expr {
+	if !f.Header || !sources {
+		return terms
+	}
+	return slices.DeleteFunc(slices.Clone(terms), func(t *kcond.Expr) bool { return len(t.Symbols()) == 0 })
 }
