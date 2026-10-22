@@ -191,33 +191,6 @@ func p(t *testing.T, s string) *kcond.Expr {
 	return e
 }
 
-func TestShort(t *testing.T) {
-	requires := map[string][]string{
-		"CONFIG_MPTCP":   {"CONFIG_INET", "CONFIG_NET"},
-		"CONFIG_INET":    {"CONFIG_NET"},
-		"CONFIG_FOO_DRV": {"CONFIG_FOO"},
-		"CONFIG_LOOP_A":  {"CONFIG_LOOP_B"},
-		"CONFIG_LOOP_B":  {"CONFIG_LOOP_A"},
-	}
-	for _, tc := range []struct{ cond, want string }{
-		{"CONFIG_MPTCP && CONFIG_NET", "CONFIG_MPTCP"},
-		{"CONFIG_MPTCP && CONFIG_INET && CONFIG_NET", "CONFIG_MPTCP"},
-		// A =y or =m test requires as much as a plain one, but stays.
-		{"CONFIG_FOO_DRV=m && CONFIG_FOO", "CONFIG_FOO_DRV=m"},
-		{"CONFIG_FOO_DRV && CONFIG_FOO=y", "CONFIG_FOO=y && CONFIG_FOO_DRV"},
-		{"CONFIG_FOO_DRV && !CONFIG_NET", "CONFIG_FOO_DRV && !CONFIG_NET"},
-		// Each AND on its own: an OR does not require its branches.
-		{"CONFIG_NET && (CONFIG_INET || CONFIG_FOO)", "(CONFIG_FOO || CONFIG_INET) && CONFIG_NET"},
-		{"(CONFIG_INET && CONFIG_NET) || (CONFIG_FOO_DRV && CONFIG_FOO)", "CONFIG_FOO_DRV || CONFIG_INET"},
-		{"CONFIG_LOOP_A && CONFIG_LOOP_B", "CONFIG_LOOP_B"},
-		{"true", "true"},
-	} {
-		if got := Short(p(t, tc.cond), requires).String(); got != tc.want {
-			t.Errorf("Short(%q) = %q, want %q", tc.cond, got, tc.want)
-		}
-	}
-}
-
 func TestVerdict(t *testing.T) {
 	cfg := kcond.Config{"CONFIG_A": 'y'}
 	for _, tc := range []struct {

@@ -194,38 +194,6 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	return fc, true
 }
 
-// Short drops from every AND of e the plain CONFIG_X terms that another
-// enabled symbol of the same AND requires, leaving the options that decide
-// it: CONFIG_MPTCP && CONFIG_NET becomes CONFIG_MPTCP, as MPTCP needs NET.
-// requires maps symbols to the ones they need enabled, as
-// kconfig.Values.Requires tells. ORs, =y and =m tests and negations stay.
-func Short(e *kcond.Expr, requires map[string][]string) *kcond.Expr {
-	if e.Op != kcond.OpAnd && e.Op != kcond.OpOr {
-		return e
-	}
-	args := make([]*kcond.Expr, len(e.Args))
-	for i, a := range e.Args {
-		args[i] = Short(a, requires)
-	}
-	if e.Op == kcond.OpOr {
-		return kcond.Or(args...)
-	}
-	for i, x := range args {
-		if x.Op != kcond.OpVar || x.State != kcond.Enabled {
-			continue
-		}
-		// A term already dropped no longer counts, so that two symbols
-		// requiring each other keep one.
-		for j, y := range args {
-			if j != i && y != nil && y.Op == kcond.OpVar && slices.Contains(requires[y.Name], x.Name) {
-				args[i] = nil
-				break
-			}
-		}
-	}
-	return kcond.And(slices.DeleteFunc(args, func(a *kcond.Expr) bool { return a == nil })...)
-}
-
 // The names of the verdicts.
 const (
 	Applies       = "applies"
