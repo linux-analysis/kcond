@@ -142,10 +142,10 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 	}
 	fc.Code = len(terms) > 0
 	fc.Region = kcond.Or(terms...)
-	seen = map[string]bool{}
+	kept := map[*kcond.Expr]bool{}
 	for _, t := range terms {
-		if !seen[t.String()] {
-			seen[t.String()] = true
+		if !kept[t] {
+			kept[t] = true
 			fc.Terms = append(fc.Terms, t)
 		}
 	}

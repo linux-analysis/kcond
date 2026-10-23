@@ -130,7 +130,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 	}
 	inComment, first, guard, guardLine := false, true, "", 0
 	track := func(id string, e *kcond.Expr) {
-		if len(e.String()) > maxDefinition {
+		if e.Len() > maxDefinition {
 			delete(defs, id)
 		} else {
 			defs[id] = e

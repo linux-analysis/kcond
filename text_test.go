@@ -26,7 +26,7 @@ func randomExpr(r *rand.Rand, depth int) *Expr {
 func sign(c int) int { return min(max(c, -1), 1) }
 
 // compareText orders expressions as their String forms do, whole and with
-// the leading ( and ! dropped.
+// the leading ( and ! dropped, and Len is the length of those forms.
 func TestCompareText(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	es := make([]*Expr, 400)
@@ -34,6 +34,9 @@ func TestCompareText(t *testing.T) {
 		es[i] = randomExpr(r, 4)
 	}
 	for _, a := range es {
+		if a.Len() != len(a.String()) {
+			t.Fatalf("Len(%s) = %d, want %d", a, a.Len(), len(a.String()))
+		}
 		for _, b := range es[:100] {
 			for _, trim := range []bool{false, true} {
 				sa, sb := a.String(), b.String()

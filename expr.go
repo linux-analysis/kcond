@@ -4,10 +4,12 @@
 package kcond
 
 import (
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // Op is the kind of an Expr node.
@@ -33,19 +35,24 @@ const (
 // Expr is an immutable boolean condition. Variables named CONFIG_* are
 // Kconfig symbols; any other variable is an opaque atom (a make function, a
 // non-Kconfig macro, a comparison) whose value is unknown. The constructors
-// keep expressions normalized, so equal String forms mean equal trees.
+// keep expressions normalized and share their nodes, so equal expressions
+// are the same pointer, with equal String forms.
 type Expr struct {
 	Op    Op
 	Val   bool    // OpConst
 	Name  string  // OpVar
 	State State   // OpVar on CONFIG_ symbols
 	Args  []*Expr // OpNot, OpAnd, OpOr
-	key   string
+
+	id   uint64                 // unique among the nodes, for hashes and sets
+	leaf string                 // the String form of a constant or a variable
+	size int                    // the length of the String form
+	text atomic.Pointer[string] // the String form of a Not, AND or OR, once written
 }
 
 var (
-	trueExpr  = &Expr{Op: OpConst, Val: true, key: "true"}
-	falseExpr = &Expr{Op: OpConst, Val: false, key: "false"}
+	trueExpr  = &Expr{Op: OpConst, Val: true, id: newID(), leaf: "true", size: len("true")}
+	falseExpr = &Expr{Op: OpConst, Val: false, id: newID(), leaf: "false", size: len("false")}
 )
 
 // Const returns the constant v.
@@ -64,9 +71,7 @@ func Var(name string, st State) *Expr {
 	if !IsSymbol(name) {
 		st = Enabled
 	}
-	e := &Expr{Op: OpVar, Name: name, State: st}
-	e.key = e.render()
-	return e
+	return intern(OpVar, name, st, nil)
 }
 
 // IsSymbol reports whether name is a Kconfig symbol rather than an opaque
@@ -83,9 +88,7 @@ func Not(e *Expr) *Expr {
 	case OpNot:
 		return e.Args[0]
 	}
-	n := &Expr{Op: OpNot, Args: []*Expr{e}}
-	n.key = n.render()
-	return n
+	return intern(OpNot, "", Enabled, []*Expr{e})
 }
 
 // And returns the conjunction of es.
@@ -111,7 +114,7 @@ func nary(op Op, es []*Expr) *Expr {
 		return only
 	}
 	var args []*Expr
-	seen := map[string]bool{}
+	seen := map[*Expr]bool{}
 	var add func(e *Expr) bool
 	add = func(e *Expr) bool {
 		switch {
@@ -127,8 +130,8 @@ func nary(op Op, es []*Expr) *Expr {
 			}
 			return true
 		}
-		if !seen[e.key] {
-			seen[e.key] = true
+		if !seen[e] {
+			seen[e] = true
 			args = append(args, e)
 		}
 		return true
@@ -141,12 +144,12 @@ func nary(op Op, es []*Expr) *Expr {
 	for _, a := range args {
 		// A and !A: Not folds only constants and double negations, so
 		// the pair has a Not of another argument.
-		if a.Op == OpNot && seen[a.Args[0].key] {
+		if a.Op == OpNot && seen[a.Args[0]] {
 			return Const(absorbing)
 		}
 		// A || B || !(A || B): the complement of an OR that was flattened
 		// into the arguments; dually for AND.
-		if a.Op == OpNot && a.Args[0].Op == op && !slices.ContainsFunc(a.Args[0].Args, func(e *Expr) bool { return !seen[e.key] }) {
+		if a.Op == OpNot && a.Args[0].Op == op && !slices.ContainsFunc(a.Args[0].Args, func(e *Expr) bool { return !seen[e] }) {
 			return Const(absorbing)
 		}
 	}
@@ -176,9 +179,7 @@ func nary(op Op, es []*Expr) *Expr {
 		}
 		return compareText(a, b, false)
 	})
-	n := &Expr{Op: op, Args: args}
-	n.key = n.render()
-	return n
+	return intern(op, "", Enabled, args)
 }
 
 // tristate merges the states one symbol is tested for: in an Or, X=y and
@@ -286,15 +287,15 @@ func hoist(args []*Expr) *Expr {
 		}
 		return []*Expr{e}
 	}
-	common := map[string]*Expr{}
+	common := map[*Expr]bool{}
 	for _, t := range terms(args[0]) {
-		common[t.key] = t
+		common[t] = true
 	}
 	for _, a := range args[1:] {
-		keep := map[string]*Expr{}
+		keep := map[*Expr]bool{}
 		for _, t := range terms(a) {
-			if common[t.key] != nil {
-				keep[t.key] = t
+			if common[t] {
+				keep[t] = true
 			}
 		}
 		common = keep
@@ -306,13 +307,13 @@ func hoist(args []*Expr) *Expr {
 	for _, a := range args {
 		var r []*Expr
 		for _, t := range terms(a) {
-			if common[t.key] == nil {
+			if !common[t] {
 				r = append(r, t)
 			}
 		}
 		rest = append(rest, And(r...))
 	}
-	for _, t := range common {
+	for t := range common {
 		shared = append(shared, t)
 	}
 	return And(append(shared, Or(rest...))...)
@@ -330,9 +331,9 @@ func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
 	if !slices.ContainsFunc(args, func(a *Expr) bool { return a.Op == dual }) {
 		return args, false
 	}
-	keys := map[string]bool{}
+	keys := map[*Expr]bool{}
 	for _, a := range args {
-		keys[a.key] = true
+		keys[a] = true
 	}
 	out = make([]*Expr, 0, len(args))
 	for _, a := range args {
@@ -343,8 +344,8 @@ func settle(op Op, args []*Expr) (out []*Expr, ok bool) {
 		changed := false
 		members := make([]*Expr, 0, len(a.Args))
 		for _, m := range a.Args {
-			if m.Op == op && slices.ContainsFunc(m.Args, func(t *Expr) bool { return keys[t.key] }) {
-				m, changed = nary(op, slices.DeleteFunc(slices.Clone(m.Args), func(t *Expr) bool { return keys[t.key] })), true
+			if m.Op == op && slices.ContainsFunc(m.Args, func(t *Expr) bool { return keys[t] }) {
+				m, changed = nary(op, slices.DeleteFunc(slices.Clone(m.Args), func(t *Expr) bool { return keys[t] })), true
 			}
 			members = append(members, m)
 		}
@@ -368,19 +369,19 @@ func absorb(op Op, args []*Expr) []*Expr {
 	if op == OpOr {
 		dual = OpAnd
 	}
-	terms := make([][]string, len(args))
+	terms := make([][]uint64, len(args))
 	index := map[string]bool{}
 	for i, a := range args {
-		ks := []string{a.key}
+		ks := []uint64{a.id}
 		if a.Op == dual {
-			ks = make([]string, len(a.Args))
+			ks = make([]uint64, len(a.Args))
 			for j, t := range a.Args {
-				ks[j] = t.key
+				ks[j] = t.id
 			}
 			slices.Sort(ks)
 		}
 		terms[i] = ks
-		index[strings.Join(ks, "\x00")] = true
+		index[idsKey(ks)] = true
 	}
 	var out []*Expr
 	for i, a := range args {
@@ -396,22 +397,22 @@ const maxAbsorb = 12
 
 // absorbed tells whether argument i's terms have a proper, non-empty subset
 // that is an argument of its own.
-func absorbed(index map[string]bool, terms [][]string, i int) bool {
+func absorbed(index map[string]bool, terms [][]uint64, i int) bool {
 	ks := terms[i]
 	n := len(ks)
 	if n > maxAbsorb || 1<<n > len(terms) {
-		set := map[string]bool{}
+		set := map[uint64]bool{}
 		for _, k := range ks {
 			set[k] = true
 		}
 		for j, other := range terms {
-			if j != i && len(other) < n && !slices.ContainsFunc(other, func(k string) bool { return !set[k] }) {
+			if j != i && len(other) < n && !slices.ContainsFunc(other, func(k uint64) bool { return !set[k] }) {
 				return true
 			}
 		}
 		return false
 	}
-	var sub []string
+	var sub []uint64
 	for mask := 1; mask < 1<<n-1; mask++ {
 		sub = sub[:0]
 		for b := range n {
@@ -419,54 +420,104 @@ func absorbed(index map[string]bool, terms [][]string, i int) bool {
 				sub = append(sub, ks[b])
 			}
 		}
-		if index[strings.Join(sub, "\x00")] {
+		if index[idsKey(sub)] {
 			return true
 		}
 	}
 	return false
 }
 
+// idsKey is a map key for a list of node ids.
+func idsKey(ids []uint64) string {
+	b := make([]byte, 0, 8*len(ids))
+	for _, id := range ids {
+		b = binary.LittleEndian.AppendUint64(b, id)
+	}
+	return string(b)
+}
+
 // String renders e in the syntax Parse accepts. Opaque atoms that are not
 // identifiers, or are named true or false, are quoted.
-func (e *Expr) String() string { return e.key }
+func (e *Expr) String() string {
+	if e.Op == OpConst || e.Op == OpVar {
+		return e.leaf
+	}
+	if s := e.text.Load(); s != nil {
+		return *s
+	}
+	var b strings.Builder
+	b.Grow(e.size)
+	e.write(&b, false)
+	s := b.String()
+	e.text.Store(&s)
+	return s
+}
 
-func (e *Expr) render() string {
+// Len is the length of e's String form, which it does not write.
+func (e *Expr) Len() int { return e.size }
+
+// write writes the String form of e, an AND or OR in parentheses as an
+// operand.
+func (e *Expr) write(b *strings.Builder, operand bool) {
 	switch e.Op {
-	case OpConst:
-		if e.Val {
-			return "true"
-		}
-		return "false"
-	case OpVar:
-		switch e.State {
-		case Builtin:
-			return e.Name + "=y"
-		case Module:
-			return e.Name + "=m"
-		}
-		if !isIdent(e.Name) || e.Name == "true" || e.Name == "false" {
-			return strconv.Quote(e.Name)
-		}
-		return e.Name
+	case OpConst, OpVar:
+		b.WriteString(e.leaf)
+		return
 	case OpNot:
-		return "!" + e.Args[0].operand()
+		b.WriteByte('!')
+		e.Args[0].write(b, true)
+		return
 	}
 	sep := " && "
 	if e.Op == OpOr {
 		sep = " || "
 	}
-	parts := make([]string, len(e.Args))
-	for i, a := range e.Args {
-		parts[i] = a.operand()
+	if operand {
+		b.WriteByte('(')
 	}
-	return strings.Join(parts, sep)
+	for i, a := range e.Args {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		a.write(b, true)
+	}
+	if operand {
+		b.WriteByte(')')
+	}
 }
 
-func (e *Expr) operand() string {
-	if e.Op == OpAnd || e.Op == OpOr {
-		return "(" + e.key + ")"
+// measure returns the String form of a variable, and the length of the
+// String form of a node whose arguments are measured.
+func (e *Expr) measure() (leaf string, size int) {
+	switch e.Op {
+	case OpVar:
+		switch {
+		case e.State == Builtin:
+			leaf = e.Name + "=y"
+		case e.State == Module:
+			leaf = e.Name + "=m"
+		case !isIdent(e.Name) || e.Name == "true" || e.Name == "false":
+			leaf = strconv.Quote(e.Name)
+		default:
+			leaf = e.Name
+		}
+		return leaf, len(leaf)
+	case OpNot:
+		return "", len("!") + e.Args[0].operandSize()
 	}
-	return e.key
+	size = len(" && ") * (len(e.Args) - 1)
+	for _, a := range e.Args {
+		size += a.operandSize()
+	}
+	return "", size
+}
+
+// operandSize is the length of e's String form as an operand.
+func (e *Expr) operandSize() int {
+	if e.Op == OpAnd || e.Op == OpOr {
+		return e.size + len("()")
+	}
+	return e.size
 }
 
 // Config maps the symbols set in a .config to 'y' or 'm'. Symbols that are

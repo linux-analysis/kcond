@@ -82,7 +82,7 @@ func (c *textCursor) fill() bool {
 		f := c.top()
 		switch e := f.e; {
 		case e.Op == OpConst || e.Op == OpVar:
-			c.piece = e.key
+			c.piece = e.leaf
 			c.depth--
 		case e.Op == OpNot && !f.opened:
 			f.opened, c.piece = true, "!"

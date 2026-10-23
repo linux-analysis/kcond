@@ -523,7 +523,7 @@ func dirConditions(roots map[string]*kcond.Expr, edges map[string][]edge, rootKb
 			return false
 		}
 		c := kcond.Or(terms...)
-		if old, ok := conds[d]; ok && old.String() == c.String() {
+		if old, ok := conds[d]; ok && old == c {
 			return false
 		}
 		conds[d] = c
