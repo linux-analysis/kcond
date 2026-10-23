@@ -187,69 +187,91 @@ func nary(op Op, es []*Expr) *Expr {
 // false, X=y or X=m makes X redundant, and !X=y with !X=m makes !X. short
 // reports that the result is the absorbing constant.
 func tristate(op Op, args []*Expr) (out []*Expr, short bool) {
-	pos := map[string]map[State]bool{}
-	neg := map[string]map[State]bool{}
+	// The tests of each symbol: a bit for each state, and the same bits
+	// shifted by negated for its negations. Only a symbol tested twice
+	// merges.
+	const negated = 3
+	tests := map[string]uint8{}
+	twice := false
 	for _, a := range args {
-		v, m := a, pos
-		if a.Op == OpNot {
-			v, m = a.Args[0], neg
-		}
-		if v.Op == OpVar && IsSymbol(v.Name) {
-			if m[v.Name] == nil {
-				m[v.Name] = map[State]bool{}
+		if l, ok := litOf(a); ok {
+			bit := uint8(1) << l.st
+			if l.neg {
+				bit <<= negated
 			}
-			m[v.Name][v.State] = true
+			twice = twice || tests[l.name] != 0
+			tests[l.name] |= bit
 		}
 	}
-	drop := map[string]bool{}
+	if !twice {
+		return args, false
+	}
+	drop := map[lit]bool{}
 	var add []*Expr
-	for name, st := range pos {
-		switch {
-		case op == OpOr && st[Enabled]:
-			drop[Var(name, Builtin).key], drop[Var(name, Module).key] = true, true
-		case op == OpOr && st[Builtin] && st[Module]:
-			drop[Var(name, Builtin).key], drop[Var(name, Module).key] = true, true
-			add = append(add, Var(name, Enabled))
-		case op == OpAnd && st[Builtin] && st[Module]:
-			return nil, true
-		case op == OpAnd && (st[Builtin] || st[Module]) && neg[name][Enabled]:
-			return nil, true
-		case op == OpAnd && st[Enabled] && (st[Builtin] || st[Module]):
-			drop[Var(name, Enabled).key] = true
-		}
-		if op != OpAnd {
-			continue
-		}
-		// X=y excludes X=m and the other way round; X without one state is
-		// the other.
-		for _, pair := range [][2]State{{Builtin, Module}, {Module, Builtin}} {
-			have, not := pair[0], pair[1]
+	for name, bits := range tests {
+		st := func(s State) bool { return bits&(1<<s) != 0 }
+		neg := func(s State) bool { return bits&(1<<(s+negated)) != 0 }
+		if bits&(1<<negated-1) != 0 {
 			switch {
-			case st[have] && neg[name][not]:
-				drop[Not(Var(name, not)).key] = true
-			case st[Enabled] && !st[Builtin] && !st[Module] && neg[name][not] && !neg[name][have]:
-				drop[Var(name, Enabled).key], drop[Not(Var(name, not)).key] = true, true
-				add = append(add, Var(name, have))
+			case op == OpOr && st(Enabled):
+				drop[lit{name, Builtin, false}], drop[lit{name, Module, false}] = true, true
+			case op == OpOr && st(Builtin) && st(Module):
+				drop[lit{name, Builtin, false}], drop[lit{name, Module, false}] = true, true
+				add = append(add, Var(name, Enabled))
+			case op == OpAnd && st(Builtin) && st(Module):
+				return nil, true
+			case op == OpAnd && (st(Builtin) || st(Module)) && neg(Enabled):
+				return nil, true
+			case op == OpAnd && st(Enabled) && (st(Builtin) || st(Module)):
+				drop[lit{name, Enabled, false}] = true
+			}
+			// X=y excludes X=m and the other way round; X without one
+			// state is the other.
+			for _, pair := range [][2]State{{Builtin, Module}, {Module, Builtin}} {
+				have, not := pair[0], pair[1]
+				switch {
+				case op != OpAnd:
+				case st(have) && neg(not):
+					drop[lit{name, not, true}] = true
+				case st(Enabled) && !st(Builtin) && !st(Module) && neg(not) && !neg(have):
+					drop[lit{name, Enabled, false}], drop[lit{name, not, true}] = true, true
+					add = append(add, Var(name, have))
+				}
 			}
 		}
-	}
-	if op == OpAnd {
-		for name, st := range neg {
-			if st[Builtin] && st[Module] {
-				drop[Not(Var(name, Builtin)).key], drop[Not(Var(name, Module)).key] = true, true
-				add = append(add, Not(Var(name, Enabled)))
-			}
+		if op == OpAnd && neg(Builtin) && neg(Module) {
+			drop[lit{name, Builtin, true}], drop[lit{name, Module, true}] = true, true
+			add = append(add, Not(Var(name, Enabled)))
 		}
 	}
 	if len(drop) == 0 && len(add) == 0 {
 		return args, false
 	}
 	for _, a := range args {
-		if !drop[a.key] {
+		if l, ok := litOf(a); !ok || !drop[l] {
 			out = append(out, a)
 		}
 	}
 	return append(out, add...), false
+}
+
+// lit is a test of a symbol for a state, negated or not.
+type lit struct {
+	name string
+	st   State
+	neg  bool
+}
+
+// litOf returns the test e is, when it is one.
+func litOf(e *Expr) (lit, bool) {
+	v, neg := e, false
+	if e.Op == OpNot {
+		v, neg = e.Args[0], true
+	}
+	if v.Op != OpVar || !IsSymbol(v.Name) {
+		return lit{}, false
+	}
+	return lit{v.Name, v.State, neg}, true
 }
 
 // hoist factors the terms every argument of an Or shares:
