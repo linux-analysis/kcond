@@ -35,8 +35,21 @@ func (th Theory) Possible(e *kcond.Expr) kcond.Tri {
 	if g := th.guess(e); th.consistent(g) && assign(e, g).IsConst(true) {
 		return kcond.True
 	}
+	// The search is what costs, and the conditions only it decides come
+	// back: a shared header's, with each commit that changes it.
+	var key string
+	if th.Values != nil {
+		key = e.String()
+		if t, ok := th.Values.searched.Load(key); ok {
+			return t.(kcond.Tri)
+		}
+	}
 	budget := maxBranches
-	return th.search(e, map[string]Set{}, &budget)
+	t := th.search(e, map[string]Set{}, &budget)
+	if th.Values != nil {
+		th.Values.searched.Store(key, t)
+	}
+	return t
 }
 
 // Always tells whether e holds in every configuration of the build (see

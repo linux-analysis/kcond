@@ -84,6 +84,9 @@ type Values struct {
 	selects     map[string][]selection // by selecting symbol, see Selects
 	requiresMu  sync.Mutex
 	requires    map[string][]string // by bare name, see Requires
+	// searched holds the answers of Theory.Possible's search, by the
+	// text of the condition, see Theory.Possible.
+	searched sync.Map
 
 	t       *Tree
 	sets    map[string]Set
