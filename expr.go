@@ -281,6 +281,9 @@ func hoist(args []*Expr) *Expr {
 	if len(args) < 2 {
 		return nil
 	}
+	if !slices.ContainsFunc(args, func(a *Expr) bool { return a.Op == OpAnd }) {
+		return nil // distinct arguments alone share no term
+	}
 	terms := func(e *Expr) []*Expr {
 		if e.Op == OpAnd {
 			return e.Args
@@ -368,6 +371,9 @@ func absorb(op Op, args []*Expr) []*Expr {
 	dual := OpOr
 	if op == OpOr {
 		dual = OpAnd
+	}
+	if !slices.ContainsFunc(args, func(a *Expr) bool { return a.Op == dual }) {
+		return args // an argument of one term has no proper subset
 	}
 	terms := make([][]uint64, len(args))
 	index := map[string]bool{}
