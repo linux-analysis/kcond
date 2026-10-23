@@ -42,7 +42,50 @@ type Options struct {
 	// the crawl rather than at the first lookup, for the crawls sharing
 	// its Includes as well.
 	Lookups []string
+	// Dirs is what the directories of the tree listed in earlier crawls
+	// of it (see Dirs); nil starts afresh.
+	Dirs *Dirs
 }
+
+// Dirs holds what each directory's Makefile listed in the crawls of one
+// tree so far, with what it read of the arch: the variables the build
+// passes to every Makefile and those the top-level Makefile exports. A
+// Makefile that reads the same of another build lists the same there, so
+// that build takes the listing without evaluating it; a few Makefiles
+// name $(SRCARCH) or append to the flags the arch Makefile sets, and are
+// evaluated in each build. A Dirs is not safe for concurrent use.
+type Dirs struct {
+	done map[string]dirEntry // by Makefile path
+}
+
+type dirEntry struct {
+	reads []outerRead
+	dirResult
+}
+
+// reuse is what the Makefile mk listed in an earlier crawl, when it read
+// the same of the arch as ev would.
+func (ds *Dirs) reuse(mk string, ev *evaluator) (dirResult, bool) {
+	en, ok := ds.done[mk]
+	if !ok {
+		return dirResult{}, false
+	}
+	for _, rd := range en.reads {
+		if rd.exported {
+			ws, ok := ev.exportedVar(rd.name)
+			if ok != rd.ok || !slices.EqualFunc(ws, rd.words, sameWord) {
+				return dirResult{}, false
+			}
+		} else if v, ok := ev.preVar(rd.name); ok != rd.ok || v != rd.value {
+			return dirResult{}, false
+		}
+	}
+	return en.dirResult, true
+}
+
+// sameWord tells whether two words are the same under the same condition,
+// which is one node when it is the same (see kcond.Expr).
+func sameWord(a, b cword) bool { return a.text == b.text && a.opaque == b.opaque && a.cond == b.cond }
 
 // Status tells how a file relates to the build.
 type Status uint8
@@ -82,6 +125,9 @@ type Result struct {
 	// Includes are the #include directives the conditions of included
 	// files were taken from, for other crawls of the tree to reuse.
 	Includes *Includes
+	// Dirs is what the directories listed, for other crawls of the tree
+	// to reuse (see Dirs).
+	Dirs *Dirs
 
 	reached map[string]bool
 	bits    string          // x86 only
@@ -300,6 +346,9 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 			scan.Go(func() { listed, _ = listIncludes(fsys) })
 		}
 	}
+	if r.Dirs = opts.Dirs; r.Dirs == nil {
+		r.Dirs = &Dirs{done: map[string]dirEntry{}}
+	}
 	if arch == "x86" || arch == "x86_64" {
 		r.bits = "64"
 		if opts.Bits == "32" {
@@ -348,9 +397,9 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		ev := newEvaluator(fsys, "", pre)
 		ev.vars = top.vars
 		ev.run("Kbuild")
-		subs, ls := collect(ev, r)
-		listings = append(listings, ls...)
-		for _, s := range subs {
+		dr := collect(ev)
+		listings = append(listings, r.listed("", dr)...)
+		for _, s := range dr.subs {
 			edges[s.dir] = append(edges[s.dir], edge{"", kcond.Relax(s.cond)})
 			linkEdges[s.dir] = append(linkEdges[s.dir], edge{"", kcond.Relax(s.builtin)})
 			queue = append(queue, s.dir)
@@ -382,10 +431,14 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		}
 		ev := newEvaluator(fsys, d, local)
 		ev.parent = top
-		ev.run(mk)
-		subs, ls := collect(ev, r)
-		listings = append(listings, ls...)
-		for _, s := range subs {
+		dr, ok := r.Dirs.reuse(mk, ev)
+		if !ok {
+			ev.run(mk)
+			dr = collect(ev)
+			r.Dirs.done[mk] = dirEntry{ev.reads, dr}
+		}
+		listings = append(listings, r.listed(d, dr)...)
+		for _, s := range dr.subs {
 			edges[s.dir] = append(edges[s.dir], edge{d, s.cond})
 			linkEdges[s.dir] = append(linkEdges[s.dir], edge{d, s.builtin})
 			r.reached[s.dir] = true
@@ -582,12 +635,30 @@ type subdir struct {
 	builtin *kcond.Expr
 }
 
+// dirResult is what a directory's Makefile lists.
+type dirResult struct {
+	subs     []subdir
+	listings []listing
+	flags    [2][]flag // subdir-ccflags-y and subdir-asflags-y
+	errors   []string
+}
+
+// listed records the errors and subdir flags of what directory d's
+// Makefile lists, and returns its listings.
+func (r *Result) listed(d string, dr dirResult) []listing {
+	if dr.flags[0] != nil || dr.flags[1] != nil {
+		r.subdirFlags[d] = dr.flags
+	}
+	r.Errors = append(r.Errors, dr.errors...)
+	return dr.listings
+}
+
 // maxComposite bounds the nesting of composite objects.
 const maxComposite = 10
 
 // collect reads the objects and subdirectories a Makefile lists once it
 // has been evaluated.
-func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
+func collect(ev *evaluator) dirResult {
 	ev.frozen = true
 	var subs []subdir
 	var ls []listing
@@ -672,11 +743,7 @@ func collect(ev *evaluator, r *Result) ([]subdir, []listing) {
 			ls = append(ls, leaf(ev, stem, inKernel(w.cond))...)
 		}
 	}
-	if c, as := ev.flags("subdir-ccflags-y"), ev.flags("subdir-asflags-y"); c != nil || as != nil {
-		r.subdirFlags[ev.dir] = [2][]flag{c, as}
-	}
-	r.Errors = append(r.Errors, ev.errors...)
-	return subs, ls
+	return dirResult{subs, ls, [2][]flag{ev.flags("subdir-ccflags-y"), ev.flags("subdir-asflags-y")}, ev.errors}
 }
 
 // objFlags returns the -I, -D and -include flags the Makefile gives the object obj

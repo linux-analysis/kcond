@@ -111,12 +111,14 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 
 // Session reads the builds of one tree. The CONFIG_ symbols the tree's
 // Kconfig files define are listed once, and the crawls share one scan of
-// the tree's #include directives, the first crawl's. A Session is not
-// safe for concurrent use.
+// the tree's #include directives, the first crawl's, and what the
+// directories listed where the arch makes no difference (see
+// kbuild.Dirs). A Session is not safe for concurrent use.
 type Session struct {
 	fsys    fs.FS
 	lookups []string
 	inc     *kbuild.Includes
+	dirs    *kbuild.Dirs
 
 	listed     sync.Once
 	defined    map[string]bool
@@ -157,14 +159,14 @@ func (s *Session) Builds(f func(Build) error) error {
 
 func (s *Session) build(sp buildSpec) Build {
 	b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == kernel.X86_64Build}
-	sp.opts.Includes, sp.opts.Lookups = s.inc, s.lookups
+	sp.opts.Includes, sp.opts.Lookups, sp.opts.Dirs = s.inc, s.lookups, s.dirs
 	var analysis sync.WaitGroup
 	var kconfigErr error
 	analysis.Go(func() { b.Values, kconfigErr = sp.values(s.fsys) })
 	analysis.Go(func() { s.listed.Do(func() { s.defined, s.definedErr = Defined(s.fsys) }) })
 	res, crawlErr := kbuild.Crawl(s.fsys, sp.opts)
 	if crawlErr == nil {
-		b.Kbuild, s.inc = res, res.Includes
+		b.Kbuild, s.inc, s.dirs = res, res.Includes, res.Dirs
 	}
 	analysis.Wait()
 	b.Defined = s.defined

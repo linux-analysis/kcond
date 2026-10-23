@@ -3,7 +3,9 @@ package kbuild
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -642,6 +644,54 @@ func TestOldArchDirectory(t *testing.T) {
 	expect(t, r, map[string]string{"arch/x86_64/kernel/setup.c": "true"})
 	if _, st := r.Lookup("arch/i386/kernel/setup.c"); st != NotBuilt {
 		t.Errorf("arch/i386 file: %v, want NotBuilt", st)
+	}
+}
+
+// The crawls of one tree share what its directories list: a Makefile
+// that reads nothing of the arch is taken from the first crawl, one that
+// names $(SRCARCH) or reads a flag variable the arch Makefile sets is
+// evaluated again.
+func TestCrawlSharesDirs(t *testing.T) {
+	files := map[string]string{
+		"Makefile":            "include $(srctree)/arch/$(SRCARCH)/Makefile\ncore-y += gen/ byarch/ flags/\nexport KBUILD_CFLAGS\n",
+		"arch/x86/Makefile":   "KBUILD_CFLAGS += -DX86\n",
+		"arch/arm64/Makefile": "",
+		"gen/Makefile":        "obj-$(CONFIG_A) += a.o\n", "gen/a.c": "",
+		"byarch/Makefile": "obj-y += $(SRCARCH).o\n", "byarch/x86.c": "", "byarch/arm64.c": "",
+		"flags/Makefile": "ccflags-y += $(KBUILD_CFLAGS)\nobj-y += f.o\n", "flags/f.c": "",
+	}
+	first, err := Crawl(tree(files), Options{Arch: "x86"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := Crawl(tree(files), Options{Arch: "arm64", Includes: first.Includes, Dirs: first.Dirs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := Crawl(tree(files), Options{Arch: "arm64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, shared, map[string]string{"gen/a.c": "CONFIG_A", "byarch/arm64.c": "true", "byarch/x86.c": "", "flags/f.c": "true"})
+	if !maps.Equal(shared.Files, fresh.Files) || !slices.Equal(shared.Errors, fresh.Errors) || !reflect.DeepEqual(shared.compiled, fresh.compiled) {
+		t.Errorf("the shared crawl differs from a fresh one:\n%v\n%v", shared.compiled, fresh.compiled)
+	}
+	reads := func(mk string) (names []string) {
+		for _, rd := range first.Dirs.done[mk].reads {
+			if rd.ok {
+				names = append(names, rd.name)
+			}
+		}
+		return names
+	}
+	if r := reads("gen/Makefile"); slices.Contains(r, "SRCARCH") || slices.Contains(r, "KBUILD_CFLAGS") {
+		t.Errorf("gen/Makefile read %v", r)
+	}
+	if r := reads("byarch/Makefile"); !slices.Contains(r, "SRCARCH") {
+		t.Errorf("byarch/Makefile read %v, no SRCARCH", r)
+	}
+	if r := reads("flags/Makefile"); !slices.Contains(r, "KBUILD_CFLAGS") {
+		t.Errorf("flags/Makefile read %v, no KBUILD_CFLAGS", r)
 	}
 }
 

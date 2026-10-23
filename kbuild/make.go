@@ -86,6 +86,9 @@ type evaluator struct {
 	// values cached, as later assignments could change them before.
 	frozen bool
 	cache  map[string][]cword
+	// reads are what the Makefile read of variables it does not set, in
+	// order: all that the evaluation takes from outside the tree (see Dirs).
+	reads []outerRead
 	// rules are the Makefile's rules that compile objects from a named
 	// source, as xe's $(obj)/i915-display/%.o: $(srctree)/.../%.c does.
 	rules []rule
@@ -93,6 +96,35 @@ type evaluator struct {
 	// expanded, the place $(eval) runs.
 	statement bool
 	calls     int // the $(call)s being expanded
+}
+
+// outerRead is a read of a variable the Makefile does not set: one the
+// build passes to every Makefile (pre), or one the top-level Makefile
+// exports, with what it found.
+type outerRead struct {
+	name     string
+	exported bool // of the parent's exports, else of pre
+	ok       bool
+	value    string  // pre
+	words    []cword // exported
+}
+
+// preVar is the value of a variable the build passes to every Makefile.
+func (e *evaluator) preVar(name string) (string, bool) {
+	v, ok := e.pre[name]
+	e.reads = append(e.reads, outerRead{name: name, ok: ok, value: v})
+	return v, ok
+}
+
+// exportedVar is the value of a variable the top-level Makefile exports.
+func (e *evaluator) exportedVar(name string) ([]cword, bool) {
+	var ws []cword
+	ok := e.parent != nil && e.parent.exported[name]
+	if ok {
+		ws = e.parent.exportedValue(name)
+	}
+	e.reads = append(e.reads, outerRead{name: name, exported: true, ok: ok, words: ws})
+	return ws, ok
 }
 
 func newEvaluator(fsys fs.FS, dir string, pre map[string]string) *evaluator {
@@ -512,7 +544,7 @@ func (e *evaluator) assign(lhs, op, value string) {
 			continue
 		}
 		name := n.text
-		if _, ok := e.pre[name]; ok || runtime[name] {
+		if _, ok := e.preVar(name); ok || runtime[name] {
 			continue
 		}
 		c := kcond.And(e.ctx, n.cond)
@@ -521,9 +553,11 @@ func (e *evaluator) assign(lhs, op, value string) {
 			v = &variable{}
 			// Appending to an exported variable extends its inherited
 			// value.
-			if op == "+=" && e.parent != nil && e.parent.exported[name] {
-				v.entries = []entry{{cond: kcond.Const(true), words: e.parent.exportedValue(name), simple: true}}
-				v.simple = true
+			if op == "+=" {
+				if ws, ok := e.exportedVar(name); ok {
+					v.entries = []entry{{cond: kcond.Const(true), words: ws, simple: true}}
+					v.simple = true
+				}
 			}
 			e.vars[name] = v
 		}
@@ -605,11 +639,11 @@ func (e *evaluator) value(name string) []cword {
 	if name == "MAKEFILE_LIST" {
 		return literal(strings.Join(e.read, " "))
 	}
-	if v, ok := e.pre[name]; ok {
+	if v, ok := e.preVar(name); ok {
 		return literal(v)
 	}
-	if e.parent != nil && e.parent.exported[name] {
-		return e.parent.exportedValue(name)
+	if ws, ok := e.exportedVar(name); ok {
+		return ws
 	}
 	if kcond.IsSymbol(name) {
 		return []cword{{cond: kcond.Var(name, kcond.Builtin), text: "y"}, {cond: kcond.Var(name, kcond.Module), text: "m"}}
