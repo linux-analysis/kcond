@@ -365,16 +365,25 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	top.run("Makefile")
 	top.frozen = true
 	r.Errors = append(r.Errors, top.errors...)
+	// The words of a line share its condition; relaxing enumerates the
+	// values of the atoms, so each condition is relaxed once.
+	relaxed := map[*kcond.Expr]*kcond.Expr{}
+	relax := func(e *kcond.Expr) *kcond.Expr {
+		if _, ok := relaxed[e]; !ok {
+			relaxed[e] = kcond.Relax(e)
+		}
+		return relaxed[e]
+	}
 	for _, f := range top.flags("LINUXINCLUDE") {
 		if f.kind == includedFile && path.Ext(f.arg) == ".h" {
-			r.forced = append(r.forced, flag{includedFile, f.arg, kcond.Relax(f.cond)})
+			r.forced = append(r.forced, flag{includedFile, f.arg, relax(f.cond)})
 		}
 	}
 	roots := map[string]*kcond.Expr{}
 	for _, name := range rootLists {
 		for _, w := range list(top, name) {
 			if d, ok := listedDir(w.text); ok && !w.opaque {
-				roots[d] = orExpr(roots[d], kcond.Relax(w.cond))
+				roots[d] = orExpr(roots[d], relax(w.cond))
 			}
 		}
 	}
@@ -400,8 +409,8 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 		dr := collect(ev)
 		listings = append(listings, r.listed("", dr)...)
 		for _, s := range dr.subs {
-			edges[s.dir] = append(edges[s.dir], edge{"", kcond.Relax(s.cond)})
-			linkEdges[s.dir] = append(linkEdges[s.dir], edge{"", kcond.Relax(s.builtin)})
+			edges[s.dir] = append(edges[s.dir], edge{"", relax(s.cond)})
+			linkEdges[s.dir] = append(linkEdges[s.dir], edge{"", relax(s.builtin)})
 			queue = append(queue, s.dir)
 		}
 		processed[""] = true
