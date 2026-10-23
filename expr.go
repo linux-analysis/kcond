@@ -171,11 +171,10 @@ func nary(op Op, es []*Expr) *Expr {
 	}
 	// Order by symbol name first, so !A sorts next to A.
 	slices.SortFunc(args, func(a, b *Expr) int {
-		ka, kb := strings.TrimLeft(a.key, "(!"), strings.TrimLeft(b.key, "(!")
-		if c := strings.Compare(ka, kb); c != 0 {
+		if c := compareText(a, b, true); c != 0 {
 			return c
 		}
-		return strings.Compare(a.key, b.key)
+		return compareText(a, b, false)
 	})
 	n := &Expr{Op: op, Args: args}
 	n.key = n.render()
