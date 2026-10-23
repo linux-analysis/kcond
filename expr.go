@@ -139,7 +139,9 @@ func nary(op Op, es []*Expr) *Expr {
 		}
 	}
 	for _, a := range args {
-		if seen[Not(a).key] {
+		// A and !A: Not folds only constants and double negations, so
+		// the pair has a Not of another argument.
+		if a.Op == OpNot && seen[a.Args[0].key] {
 			return Const(absorbing)
 		}
 		// A || B || !(A || B): the complement of an OR that was flattened
