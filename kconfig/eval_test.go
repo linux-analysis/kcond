@@ -510,3 +510,23 @@ config NUM
 		}
 	}
 }
+
+// Numbers compare as numbers, decimal or hex, and anything else as text.
+func TestCompareValues(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{"10", "9", 1},
+		{"0x10", "15", 1},
+		{"-1", "0", -1},
+		{"+5", "5", 0},
+		{"y", "n", 1},
+		{"10", "y", -1},
+		{"", "0", -1},
+	} {
+		if got := compareValues(tc.a, tc.b); got != tc.want {
+			t.Errorf("compareValues(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

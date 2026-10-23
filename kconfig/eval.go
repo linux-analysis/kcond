@@ -1,6 +1,7 @@
 package kconfig
 
 import (
+	"cmp"
 	"maps"
 	"slices"
 	"strconv"
@@ -408,18 +409,23 @@ func (v *Values) compare(e *Expr) Set {
 
 // compareValues compares numerically when both values are numbers.
 func compareValues(a, b string) int {
-	x, errA := strconv.ParseInt(a, 0, 64)
-	y, errB := strconv.ParseInt(b, 0, 64)
-	if errA == nil && errB == nil {
-		switch {
-		case x < y:
-			return -1
-		case x > y:
-			return 1
+	if x, ok := number(a); ok {
+		if y, ok := number(b); ok {
+			return cmp.Compare(x, y)
 		}
-		return 0
 	}
 	return strings.Compare(a, b)
+}
+
+// number reads s as a decimal or 0x number. Only a digit or a sign starts
+// one, which spares the usual y, m, n and names the error ParseInt
+// allocates.
+func number(s string) (int64, bool) {
+	if s == "" || (s[0] < '0' || s[0] > '9') && s[0] != '-' && s[0] != '+' {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 0, 64)
+	return n, err == nil
 }
 
 // strings returns the string values an operand can have; ok is false when
