@@ -2,6 +2,8 @@ package kconfig
 
 import (
 	"fmt"
+	"maps"
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -371,6 +373,140 @@ config FOO
 	th := Theory{Values: v}
 	if th.Possible(big) != kcond.True || th.Always(big) != kcond.False {
 		t.Errorf("big: possible %v always %v", th.Possible(big), th.Always(big))
+	}
+
+	// A term the Kconfig settles settles the OR before any branch.
+	terms = terms[:0]
+	for i := range 2000 {
+		terms = append(terms, kcond.And(kcond.Var(fmt.Sprintf("defined(A%d)", i), kcond.Enabled), kcond.Var(fmt.Sprintf("defined(B%d)", i), kcond.Enabled)))
+	}
+	if got := th.Always(kcond.Or(append(terms, kcond.Var("CONFIG_MMU", kcond.Enabled))...)); got != kcond.True {
+		t.Errorf("Always(... || CONFIG_MMU) = %v, want true", got)
+	}
+}
+
+// TestPossibleWant checks that the search tries first the value a test
+// needs where it sits: Always asks whether !e is possible, and the terms
+// of e are turned off there before their symbols are turned on.
+func TestPossibleWant(t *testing.T) {
+	kc := base + `
+config MMU
+	def_bool y
+
+config ZZ
+	tristate "zz"
+
+config D
+	tristate "d"
+
+config U
+	tristate "u"
+	depends on D
+`
+	var terms []*kcond.Expr
+	for i := range 20 {
+		kc += fmt.Sprintf("\nconfig A%d\n\tbool \"a\"\n\tdepends on ZZ\n\nconfig B%d\n\tbool \"b\"\n", i, i)
+		terms = append(terms, kcond.And(kcond.Var(fmt.Sprintf("CONFIG_A%d", i), kcond.Enabled), kcond.Var(fmt.Sprintf("CONFIG_B%d", i), kcond.Enabled)))
+	}
+	th := Theory{Values: analyze(t, map[string]string{"Kconfig": kc}, nil)}
+	// Off with U and D m and ZZ n. The guess fails, U turning D y, and an
+	// A turned on makes ZZ m or y, which shows only once ZZ is tried,
+	// past all the other As.
+	e := kcond.Or(append(terms, kcond.Var("CONFIG_D", kcond.Builtin), kcond.And(kcond.Var("CONFIG_ZZ", kcond.Module), kcond.Var("CONFIG_MMU", kcond.Enabled)), kcond.Var("CONFIG_ZZ", kcond.Builtin), kcond.Not(kcond.Var("CONFIG_U", kcond.Enabled)))...)
+	if got := th.Always(e); got != kcond.False {
+		t.Errorf("Always = %v, want false", got)
+	}
+}
+
+// TestPossibleModel checks Possible against every configuration of its
+// model on random conditions small enough for the search to finish:
+// each symbol a value Of allows it, each enabled one with the symbols it
+// requires enabled, and the opaque atom n or y.
+func TestPossibleModel(t *testing.T) {
+	v := analyze(t, map[string]string{"Kconfig": base + `
+config MMU
+	def_bool y
+
+config NET
+	bool "net"
+
+config BONDING
+	tristate "bonding"
+	depends on NET
+
+config IO_URING
+	bool "io_uring" if EXPERT
+	default y
+
+config MOD_ONLY
+	tristate "module only"
+	depends on m
+
+config FOO
+	tristate "foo"
+	select NET
+`}, nil)
+	names := []string{"CONFIG_MODULES", "CONFIG_EXPERT", "CONFIG_MMU", "CONFIG_NET", "CONFIG_BONDING",
+		"CONFIG_IO_URING", "CONFIG_MOD_ONLY", "CONFIG_FOO", "CONFIG_ARCH_QCOM", `"defined(X)"`}
+	th := Theory{Values: v}
+	var models []map[string]Set
+	var enumerate func(i int, cfg map[string]Set)
+	enumerate = func(i int, cfg map[string]Set) {
+		if i == len(names) {
+			for name, x := range cfg {
+				for _, r := range th.requires(name) {
+					if x != N && cfg[r] == N {
+						return
+					}
+				}
+			}
+			models = append(models, maps.Clone(cfg))
+			return
+		}
+		for _, x := range []Set{N, M, Y} {
+			if th.domain(names[i])&x != 0 {
+				cfg[names[i]] = x
+				enumerate(i+1, cfg)
+			}
+		}
+	}
+	enumerate(0, map[string]Set{})
+
+	rng := rand.New(rand.NewPCG(1, 2))
+	var gen func(depth int) *kcond.Expr
+	gen = func(depth int) *kcond.Expr {
+		if depth == 0 || rng.IntN(3) == 0 {
+			return kcond.Var(names[rng.IntN(len(names))], []kcond.State{kcond.Enabled, kcond.Builtin, kcond.Module}[rng.IntN(3)])
+		}
+		switch rng.IntN(3) {
+		case 0:
+			return kcond.Not(gen(depth - 1))
+		case 1:
+			return kcond.And(gen(depth-1), gen(depth-1), gen(depth-1))
+		}
+		return kcond.Or(gen(depth-1), gen(depth-1), gen(depth-1))
+	}
+	for range 3000 {
+		e := gen(4)
+		want := kcond.False
+		for _, cfg := range models {
+			if kcond.Rewrite(e, func(v *kcond.Expr) *kcond.Expr {
+				switch x := cfg[v.Name]; v.State {
+				case kcond.Builtin:
+					return kcond.Const(x == Y)
+				case kcond.Module:
+					return kcond.Const(x == M)
+				default:
+					return kcond.Const(x != N)
+				}
+			}).IsConst(true) {
+				want = kcond.True
+				break
+			}
+		}
+		if got := th.Possible(e); got != want {
+			t.Fatalf("Possible(%s) = %v, want %v", e, got, want)
+		}
 	}
 }
 

@@ -32,7 +32,7 @@ const maxBranches = 1 << 12
 // rules e in nor out.
 func (th Theory) Possible(e *kcond.Expr) kcond.Tri {
 	e = free(e, th.Defined)
-	if g := th.guess(e); th.consistent(g) && assign(e, g).IsConst(true) {
+	if g := th.guess(e); th.consistent(g) && value(e, g) == kcond.True {
 		return kcond.True
 	}
 	// The search is what costs, and the conditions only it decides come
@@ -44,8 +44,15 @@ func (th Theory) Possible(e *kcond.Expr) kcond.Tri {
 			return t.(kcond.Tri)
 		}
 	}
+	syms := e.Symbols()
+	dom := map[string]Set{}
+	for _, names := range [][]string{syms, e.Opaque()} {
+		for _, name := range names {
+			dom[name] = th.domain(name)
+		}
+	}
 	budget := maxBranches
-	t := th.search(e, map[string]Set{}, &budget)
+	t := th.search(e, dom, th.requiredBy(syms), &budget)
 	if th.Values != nil {
 		th.Values.searched.Store(key, t)
 	}
@@ -173,61 +180,95 @@ func (th Theory) consistent(g map[string]Set) bool {
 	return true
 }
 
-// assign is e with each variable g sets replaced by the truth of its test.
-func assign(e *kcond.Expr, g map[string]Set) *kcond.Expr {
-	return kcond.Rewrite(e, func(v *kcond.Expr) *kcond.Expr {
-		x, ok := g[v.Name]
-		if !ok {
-			return nil
-		}
-		switch v.State {
-		case kcond.Builtin:
-			return kcond.Const(x == Y)
-		case kcond.Module:
-			return kcond.Const(x == M)
-		}
-		return kcond.Const(x != N)
-	})
-}
-
-// firstVar is the first variable test of e.
-func firstVar(e *kcond.Expr) *kcond.Expr {
-	for e.Op != kcond.OpVar {
-		e = e.Args[0]
-	}
-	return e
-}
-
-// search tells whether some values of the variables of e within dom, the
-// domains narrowed so far, make e true, branching on its first variable
-// and trying first the values its test there asks for (see Possible).
-func (th Theory) search(e *kcond.Expr, dom map[string]Set, budget *int) kcond.Tri {
-	if e.Op == kcond.OpConst {
+// value is e's truth when each variable takes a value in its set in dom:
+// True or False when all of them make it so, Unknown otherwise.
+func value(e *kcond.Expr, dom map[string]Set) kcond.Tri {
+	switch e.Op {
+	case kcond.OpConst:
 		if e.Val {
 			return kcond.True
 		}
 		return kcond.False
+	case kcond.OpVar:
+		d, yes := dom[e.Name], Y|M
+		switch e.State {
+		case kcond.Builtin:
+			yes = Y
+		case kcond.Module:
+			yes = M
+		}
+		switch {
+		case d&^yes == 0:
+			return kcond.True
+		case d&yes == 0:
+			return kcond.False
+		}
+		return kcond.Unknown
+	case kcond.OpNot:
+		return not(value(e.Args[0], dom))
+	}
+	short, res := kcond.False, kcond.True // And: False short-circuits
+	if e.Op == kcond.OpOr {
+		short, res = kcond.True, kcond.False
+	}
+	for _, a := range e.Args {
+		switch value(a, dom) {
+		case short:
+			return short
+		case kcond.Unknown:
+			res = kcond.Unknown
+		}
+	}
+	return res
+}
+
+// next is the first variable test of e that dom leaves open, reached
+// through the first open operand of each AND and OR; e must be open. want
+// is the value of the test that makes e true, flipped by each NOT on the
+// way.
+func next(e *kcond.Expr, dom map[string]Set) (v *kcond.Expr, want bool) {
+	want = true
+	for e.Op != kcond.OpVar {
+		if e.Op == kcond.OpNot {
+			e, want = e.Args[0], !want
+			continue
+		}
+		for _, a := range e.Args {
+			if value(a, dom) == kcond.Unknown {
+				e = a
+				break
+			}
+		}
+	}
+	return e, want
+}
+
+// search tells whether some values of the variables of e within dom, the
+// domains narrowed so far, make e true, branching on its next open
+// variable and trying first the values that make e true there, as guess
+// does (see Possible); requiredBy lists the symbols of e that require
+// each symbol.
+func (th Theory) search(e *kcond.Expr, dom map[string]Set, requiredBy map[string][]string, budget *int) kcond.Tri {
+	if t := value(e, dom); t != kcond.Unknown {
+		return t
 	}
 	if *budget <= 0 {
 		return kcond.Unknown
 	}
 	*budget--
-	v := firstVar(e)
-	d := th.domain(v.Name)
-	if nd, ok := dom[v.Name]; ok {
-		d &= nd
-	}
+	v, want := next(e, dom)
+	d := dom[v.Name]
 	res := kcond.False
-	for _, x := range append(prefer(v, true), prefer(v, false)...) {
+	for _, x := range append(prefer(v, want), prefer(v, !want)...) {
 		if d&x == 0 {
 			continue
 		}
 		d &^= x
-		next, fixed, ok := th.fix(e, dom, v.Name, x)
+		narrowed, ok := th.fix(dom, requiredBy, v.Name, x)
 		if !ok {
 			continue
 		}
-		switch th.search(assign(e, fixed), next, budget) {
+		switch th.search(e, narrowed, requiredBy, budget) {
 		case kcond.True:
 			return kcond.True
 		case kcond.Unknown:
@@ -237,12 +278,25 @@ func (th Theory) search(e *kcond.Expr, dom map[string]Set, budget *int) kcond.Tr
 	return res
 }
 
-// fix sets the variable name of e to x: the domains narrowed by what x
+// requiredBy lists, for each symbol, the symbols of syms that require it.
+func (th Theory) requiredBy(syms []string) map[string][]string {
+	by := map[string][]string{}
+	for _, s := range syms {
+		for _, r := range th.requires(s) {
+			if r != s {
+				by[r] = append(by[r], s)
+			}
+		}
+	}
+	return by
+}
+
+// fix sets the variable name to x in dom: the domains narrowed by what x
 // asks of the others, an enabled symbol its requirements enabled and a
-// disabled one the symbols of e that require it disabled, and the values
-// fixed by it; ok is false when a domain is left empty.
-func (th Theory) fix(e *kcond.Expr, dom map[string]Set, name string, x Set) (next, fixed map[string]Set, ok bool) {
-	next, fixed = maps.Clone(dom), map[string]Set{name: x}
+// disabled one the symbols that require it disabled (see requiredBy); ok
+// is false when a domain is left empty.
+func (th Theory) fix(dom map[string]Set, requiredBy map[string][]string, name string, x Set) (next map[string]Set, ok bool) {
+	next = maps.Clone(dom)
 	next[name] = x
 	if x != N {
 		for _, r := range th.requires(name) {
@@ -251,21 +305,19 @@ func (th Theory) fix(e *kcond.Expr, dom map[string]Set, name string, x Set) (nex
 				d &= nd
 			}
 			if d &^= N; d == 0 {
-				return nil, nil, false
+				return nil, false
 			}
 			next[r] = d
 		}
-		return next, fixed, true
+		return next, true
 	}
-	for _, s := range e.Symbols() {
-		if s != name && slices.Contains(th.requires(s), name) {
-			if nd, ok := next[s]; ok && nd&N == 0 {
-				return nil, nil, false
-			}
-			next[s], fixed[s] = N, N
+	for _, s := range requiredBy[name] {
+		if next[s]&N == 0 {
+			return nil, false
 		}
+		next[s] = N
 	}
-	return next, fixed, true
+	return next, true
 }
 
 // Plain writes the tests of e on symbols that cannot be m in the build
