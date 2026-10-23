@@ -406,9 +406,9 @@ func TestRegionModule(t *testing.T) {
 		"drivers/aha152x.c": "CONFIG_PC=y || CONFIG_S=y",
 		"drivers/both.c":    "CONFIG_A=y || CONFIG_B=y",
 	} {
-		c, unknown := Combine([]FileCond{b.Eval(file(path), region)})
-		if eq, ok := kcond.Equal(c, p(t, want)); !ok || !eq || unknown {
-			t.Errorf("%s: %s (unknown %v), want %s", path, c, unknown, want)
+		c := Term(b.Eval(file(path), region))
+		if eq, ok := kcond.Equal(c, p(t, want)); !ok || !eq {
+			t.Errorf("%s: %s, want %s", path, c, want)
 		}
 	}
 	if fc := b.Eval(file("include/linux/lp.h"), region); fc.Region.String() != region.String() {
@@ -429,9 +429,9 @@ func TestRegionDefines(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := Build{Arch: "x86", Name: "x86_64", X86_64: true, Kbuild: res}
-	c, unknown := Combine([]FileCond{b.Eval(file("drivers/x.c"), p(t, `"defined(DEBUG)"`))})
-	if want := p(t, `CONFIG_X && (CONFIG_X_DEBUG=y || "defined(DEBUG)")`); unknown || !equal(c, want) {
-		t.Errorf("Combine = %s (unknown %v), want %s", c, unknown, want)
+	c := Term(b.Eval(file("drivers/x.c"), p(t, `"defined(DEBUG)"`)))
+	if want := p(t, `CONFIG_X && (CONFIG_X_DEBUG=y || "defined(DEBUG)")`); !equal(c, want) {
+		t.Errorf("Term = %s, want %s", c, want)
 	}
 	// Without a flag naming it, the macro's atom stays as it was, and so
 	// does an atom that only ends like a defined() test.

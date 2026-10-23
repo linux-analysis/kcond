@@ -32,7 +32,6 @@ type CommitResult struct {
 	Commit    string       `json:"commit"`
 	Files     []FileResult `json:"files"`
 	Condition string       `json:"condition"`
-	Unknown   bool         `json:"unknown"`
 	Label     string       `json:"label"`
 	Arches    []string     `json:"arches"`
 	Verdict   string       `json:"verdict,omitempty"`
@@ -54,8 +53,8 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 	// revision once.
 	var commits []Commit
 	var changes [][]change.FileChange
-	var counted [][]bool // changes[i][j] counts in its commit (see builds.Counted)
-	var unread []bool    // the commit changes nothing the build reads
+	var counted [][]bool  // changes[i][j] counts in its commit (see builds.Counted)
+	var others [][]string // when no file of the commit counts, the files it changes the build reads
 	var files []*File
 	err = Walk(ctx, dir, args, o.Warn, func(c Commit, d string) {
 		all := change.Changes(cat, c.Hash, d)
@@ -63,7 +62,6 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 		code := slices.DeleteFunc(slices.Clone(all), func(ch change.FileChange) bool { return !ch.Code })
 		commits = append(commits, c)
 		changes = append(changes, code)
-		unread = append(unread, len(code) == 0 && Unread(d, all))
 		sources := slices.ContainsFunc(code, func(ch change.FileChange) bool { return !ch.Header })
 		counts := make([]bool, len(code))
 		for j, ch := range code {
@@ -76,6 +74,11 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 			files = append(files, f)
 		}
 		counted = append(counted, counts)
+		var read []string
+		if !slices.Contains(counts, true) {
+			read = ReadByBuild(d, all)
+		}
+		others = append(others, read)
 	})
 	if err != nil {
 		return nil, err
@@ -88,7 +91,7 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 	results := make([]CommitResult, 0, len(commits))
 	for i, c := range commits {
 		r := CommitResult{Commit: c.Hash}
-		var conds []builds.FileCond
+		var terms []*kcond.Expr
 		var fas []builds.FileArches
 		for j, ch := range changes[i] {
 			res := found[0]
@@ -118,41 +121,46 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 			}
 			r.Files = append(r.Files, c)
 			if counted[i][j] {
-				conds = append(conds, res.Counted(build))
+				terms = append(terms, builds.Term(res.Counted(build)))
 				fas = append(fas, res.CountedArches())
 			}
 		}
-		e, unknown := builds.Combine(conds)
-		sum := builds.Summarize(fas)
-		if unread[i] {
-			e, unknown, sum.Label = kcond.Const(false), false, "none"
+		// Without a kernel file that counts, the other files the build
+		// reads, as Makefiles, Kconfig and device trees, are unknown.
+		for _, p := range others[i] {
+			terms = append(terms, builds.Unknown(p))
 		}
-		r.Condition, r.Unknown = condText(e), unknown
-		r.Label, r.Arches = sum.Label, sum.Arches
+		e := kcond.Or(terms...)
+		sum := builds.Summarize(fas)
+		if len(terms) == 0 {
+			sum.Label = "none" // the build reads nothing the commit changes
+		}
+		r.Condition, r.Label, r.Arches = e.String(), sum.Label, sum.Arches
 		if o.Config != nil {
-			r.Verdict = change.VerdictName(change.Verdict(e, unknown, o.Config))
+			r.Verdict = change.VerdictName(e.Eval(o.Config))
 		}
 		results = append(results, r)
 	}
 	return results, nil
 }
 
-// Unread reports whether the build reads none of the files a diff
-// changes: each is outside the build, or a kernel file whose changed lines
-// are all comments, as changes tells.
-func Unread(diff string, changes []change.FileChange) bool {
+// ReadByBuild returns the files a diff changes that the build reads: those
+// not outside it (see kernel.OutsideBuild), except a kernel file whose
+// changed lines are all comments, as changes tells.
+func ReadByBuild(diff string, changes []change.FileChange) []string {
 	comments := map[string]bool{}
 	for _, ch := range changes {
 		comments[ch.Path] = !ch.Code
 	}
+	var read []string
 	for _, f := range unidiff.Files(diff) {
 		for _, p := range []string{f.OldPath, f.NewPath} {
-			if p != "" && !kernel.OutsideBuild(p) && !comments[p] {
-				return false
+			if p != "" && !kernel.OutsideBuild(p) && !comments[p] && !slices.Contains(read, p) {
+				read = append(read, p)
 			}
 		}
 	}
-	return true
+	return read
 }
 
 // condText writes e, "" for nil.

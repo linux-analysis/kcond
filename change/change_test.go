@@ -1,10 +1,6 @@
 package change
 
-import (
-	"testing"
-
-	"github.com/linux-analysis/kcond"
-)
+import "testing"
 
 type blobs map[string]string
 
@@ -179,37 +175,5 @@ func TestChangesMissingImage(t *testing.T) {
 	got := Changes(blobs{}, "h", diff)
 	if got[0].Region.String() != "true" || !got[0].Code {
 		t.Errorf("foo.c = %+v", got[0])
-	}
-}
-
-func p(t *testing.T, s string) *kcond.Expr {
-	t.Helper()
-	e, err := kcond.Parse(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return e
-}
-
-func TestVerdict(t *testing.T) {
-	cfg := kcond.Config{"CONFIG_A": 'y'}
-	for _, tc := range []struct {
-		cond    string
-		unknown bool
-		want    kcond.Tri
-	}{
-		{"CONFIG_A", false, kcond.True},
-		{"CONFIG_B", false, kcond.False},
-		{"CONFIG_B", true, kcond.Unknown},
-		{"CONFIG_A", true, kcond.True},
-		{"", true, kcond.Unknown},
-	} {
-		var c *kcond.Expr
-		if tc.cond != "" {
-			c = p(t, tc.cond)
-		}
-		if got := Verdict(c, tc.unknown, cfg); got != tc.want {
-			t.Errorf("Verdict(%q, %v) = %v, want %v", tc.cond, tc.unknown, got, tc.want)
-		}
 	}
 }

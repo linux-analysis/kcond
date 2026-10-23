@@ -169,17 +169,3 @@ func VerdictName(v kcond.Tri) string {
 	}
 	return MayApply
 }
-
-// Verdict tells whether code under the given condition is built by cfg:
-// True when the condition holds, False when it does not and no file is
-// unknown, Unknown otherwise.
-func Verdict(cond *kcond.Expr, unknown bool, cfg kcond.Config) kcond.Tri {
-	if cond == nil {
-		return kcond.Unknown
-	}
-	v := cond.Eval(cfg)
-	if v == kcond.False && unknown {
-		return kcond.Unknown
-	}
-	return v
-}

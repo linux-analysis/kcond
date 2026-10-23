@@ -516,11 +516,11 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 		for i, q := range queries {
 			f, _ := kernel.FileOf(q.path)
 			fc := b.Eval(f, regions[i])
-			e, unknown := builds.Combine([]builds.FileCond{fc})
+			e := builds.Term(fc)
 			r := fileCond{Path: q.path, Lines: q.lines(), Build: b.Name, Status: fc.Status.String(), Kbuild: condText(fc.Kbuild),
-				Region: fc.Region.String(), Condition: condText(e)}
+				Region: fc.Region.String(), Condition: e.String()}
 			if o.cfg != nil {
-				r.Verdict = change.VerdictName(change.Verdict(e, unknown, o.cfg.Config))
+				r.Verdict = change.VerdictName(e.Eval(o.cfg.Config))
 			}
 			rows = append(rows, r)
 		}
@@ -534,14 +534,11 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	}
 	return print(out, o, rows, func() {
 		for _, r := range rows {
-			p, cond := r.Path, r.Condition
+			p := r.Path
 			if r.Lines != "" {
 				p += ":" + r.Lines
 			}
-			if cond == "" {
-				cond = "unknown"
-			}
-			fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s", p, r.Build, r.Status, r.Kbuild, r.Region, cond)
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s", p, r.Build, r.Status, r.Kbuild, r.Region, r.Condition)
 			if r.Verdict != "" {
 				fmt.Fprintf(out, "\t%s", r.Verdict)
 			}
@@ -577,13 +574,6 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 		// The commit line carries the summary and the file rows follow
 		// indented, so grep -v '^ ' is the one-line view.
 		for _, r := range results {
-			cond := r.Condition
-			switch {
-			case cond == "":
-				cond = "unknown"
-			case r.Unknown:
-				cond += " (unknown in part)"
-			}
 			line := r.Commit
 			if r.Verdict != "" {
 				line += "\t" + r.Verdict
@@ -591,7 +581,7 @@ func diff(ctx context.Context, o opts, args []string, out io.Writer) error {
 			if build == "" {
 				line += "\t" + r.Label
 			}
-			fmt.Fprintf(out, "%s\t%s\n", line, cond)
+			fmt.Fprintf(out, "%s\t%s\n", line, r.Condition)
 			for _, c := range r.Files {
 				fmt.Fprintf(out, "  %s\t%s\t%s\tregion %s", c.Path, c.Status, c.Kbuild, c.Region)
 				if build == "" {

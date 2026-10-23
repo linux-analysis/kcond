@@ -246,7 +246,7 @@ func (b Build) term(fc FileCond) (*kcond.Expr, ArchVerdict) {
 	if fc.Header && fc.found != kbuild.Built {
 		e := Term(FileCond{File: fc.File, Status: StatusHeader, Region: fc.region})
 		switch {
-		case e == nil:
+		case IsUnknown(e):
 			return nil, ArchMaybe
 		case e.IsConst(false):
 			return nil, ArchNo
@@ -351,8 +351,8 @@ type ArchSummary struct {
 }
 
 // Summarize combines the files that count in a change (see Counted), each
-// with the arches of its lines that count, as Combine combines their
-// conditions. The label covers the label
+// with the arches of its lines that count, as the OR of their Terms
+// combines their conditions. The label covers the label
 // arches present at the files' revisions: generic when every one but
 // kernel.OptionalArch may build the code, the arch's name when only one does,
 // several otherwise; other when every counted path is under an

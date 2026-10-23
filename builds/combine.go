@@ -2,6 +2,7 @@ package builds
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/kbuild"
@@ -38,31 +39,13 @@ type FileCond struct {
 	kbuild, region *kcond.Expr
 }
 
-// Combine is the condition of a change given the files that count in it
-// (see Counted), each with the region of its lines that count: the OR of
-// what each contributes (see Term). cond is nil when no file has a known
-// condition.
-func Combine(files []FileCond) (cond *kcond.Expr, unknown bool) {
-	var terms []*kcond.Expr
-	for _, f := range files {
-		if e := Term(f); e != nil {
-			terms = append(terms, e)
-		} else {
-			unknown = true
-		}
-	}
-	if len(terms) == 0 {
-		return nil, true
-	}
-	return kcond.Or(terms...), unknown
-}
-
-// Term is what a changed file contributes to the condition of its change.
-// Sources, and headers built where the files including them are,
-// contribute their Kbuild condition ANDed with their region; a source that
-// is not built contributes false, and one whose condition is unknown nil.
-// The other headers have no Kbuild condition and contribute their region
-// when it names a Kconfig symbol or is never compiled, and nil otherwise.
+// Term is what a changed file contributes to the condition of its change,
+// the OR of its files' terms. Sources, and headers built where the files
+// including them are, contribute their Kbuild condition ANDed with their
+// region; a source that is not built contributes false. The other headers
+// have no Kbuild condition and contribute their region when it names a
+// Kconfig symbol or is never compiled. A file whose condition is unknown
+// contributes its Unknown atom.
 func Term(f FileCond) *kcond.Expr {
 	switch {
 	case f.Status == StatusBuilt:
@@ -72,8 +55,21 @@ func Term(f FileCond) *kcond.Expr {
 	case f.Header && len(f.Region.Symbols()) > 0:
 		return f.Region
 	}
-	return nil
+	return Unknown(f.Path)
 }
+
+// Unknown is the condition of a file that is read where kcond cannot
+// tell: an opaque atom naming it, which no configuration decides.
+func Unknown(path string) *kcond.Expr {
+	return kcond.Var(unknownAtom+path+")", kcond.Enabled)
+}
+
+// IsUnknown reports whether e is the Unknown atom of a file.
+func IsUnknown(e *kcond.Expr) bool {
+	return e.Op == kcond.OpVar && strings.HasPrefix(e.Name, unknownAtom)
+}
+
+const unknownAtom = "unknown("
 
 // Counted returns the conditions of the changed lines of a file that count
 // in its change, terms being those of all its changed lines and sources

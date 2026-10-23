@@ -148,7 +148,7 @@ func TestCond(t *testing.T) {
 	dir, _ := newKernel(t)
 	out, code := capture(t, "--tree", dir, "--rev", "HEAD", "--build", "x86_64", "cond", "lib/a.c", "lib/b.c", "lib/c.c", "include/linux/x.h")
 	for _, want := range []string{"lib/a.c\tx86_64\tbuilt\tCONFIG_A\ttrue\tCONFIG_A\n", "lib/b.c\tx86_64\tbuilt\tCONFIG_B\ttrue\tCONFIG_B\n",
-		"lib/c.c\tx86_64\tunlisted\t\ttrue\tunknown\n", "include/linux/x.h\tx86_64\theader\t\ttrue\tunknown\n"} {
+		"lib/c.c\tx86_64\tunlisted\t\ttrue\t\"unknown(lib/c.c)\"\n", "include/linux/x.h\tx86_64\theader\t\ttrue\t\"unknown(include/linux/x.h)\"\n"} {
 		if code != 0 || !strings.Contains(out, want) {
 			t.Errorf("cond = %q, %d: want %q", out, code, want)
 		}
@@ -205,7 +205,7 @@ func TestSymbolsUnknown(t *testing.T) {
 }
 
 // diff leaves out a file whose changed lines are all comments, so that
-// it does not make the condition unknown.
+// it does not make the condition unknown in part.
 func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	dir, fix := newKernel(t)
 	out, code := capture(t, "--tree", dir, "--json", "diff", fix)
@@ -213,8 +213,52 @@ func TestDiffSkipsCommentOnlyFiles(t *testing.T) {
 	if code != 0 || json.Unmarshal([]byte(out), &res) != nil || len(res) != 1 {
 		t.Fatalf("diff = %q, %d", out, code)
 	}
-	if r := res[0]; len(r.Files) != 1 || r.Files[0].Path != "lib/a.c" || r.Unknown || r.Condition != "CONFIG_A" {
+	if r := res[0]; len(r.Files) != 1 || r.Files[0].Path != "lib/a.c" || r.Condition != "CONFIG_A" {
 		t.Errorf("diff = %+v", r)
+	}
+}
+
+// A file kcond cannot place is named in the condition, which a .config
+// then leaves unknown unless the rest of it applies. Next to a kernel file
+// a Makefile names nothing: the kernel file decides.
+func TestDiffUnknownFiles(t *testing.T) {
+	dir, _ := newKernel(t)
+	commit := func(files map[string]string) string {
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git(t, dir, "add", name)
+		}
+		git(t, dir, "commit", "-q", "-m", "change")
+		return git(t, dir, "rev-parse", "HEAD")
+	}
+	part := commit(map[string]string{"lib/a.c": "int a = 2;\n#ifdef CONFIG_B\nint ab;\n#endif\n", "lib/c.c": "int c = 2;\n"})
+	mixed := commit(map[string]string{"lib/a.c": "int a = 3;\n#ifdef CONFIG_B\nint ab;\n#endif\n", "lib/Makefile": "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nccflags-y += -DX\n"})
+	for _, tc := range []struct{ config, part, mixed string }{
+		{"", "unknown\t\"unknown(lib/c.c)\" || CONFIG_A", "not applicable\tCONFIG_A"},
+		{"CONFIG_A=y\n", "applies\t\"unknown(lib/c.c)\" || CONFIG_A", "applies\tCONFIG_A"},
+	} {
+		cfg := filepath.Join(t.TempDir(), ".config")
+		if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\n"+tc.config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, code := capture(t, "--tree", dir, "--config", cfg, "diff", part, mixed)
+		for _, want := range []string{part + "\t" + tc.part + "\n", mixed + "\t" + tc.mixed + "\n"} {
+			if code != 0 || !strings.Contains(out, want) {
+				t.Errorf("diff with %q = %q, %d; want %q", tc.config, out, code, want)
+			}
+		}
+	}
+}
+
+// A file of unknown condition is not built only where an option holds,
+// even one every configuration enables.
+func TestSearchUnknownFile(t *testing.T) {
+	dir, _ := newKernel(t)
+	h := commitFile(t, dir, "lib/c.c", "int c = 2;\n")
+	if out, code := capture(t, "--tree", dir, "search", h, "--where", "CONFIG_X86"); code != 0 || out != "" {
+		t.Errorf("search --where CONFIG_X86 = %q, %d; want no match", out, code)
 	}
 }
 
@@ -249,7 +293,8 @@ func TestDiffReachable(t *testing.T) {
 }
 
 // A commit the build reads nothing of does not apply, nor does one that
-// only adds a comment to a line; one that changes a Makefile may.
+// only adds a comment to a line; one that changes a Makefile may, which
+// its condition names.
 func TestDiffOutsideBuild(t *testing.T) {
 	dir, _ := newKernel(t)
 	docs := commitFile(t, dir, "Documentation/a.rst", "A\n")
@@ -261,13 +306,13 @@ func TestDiffOutsideBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := capture(t, "--tree", dir, "--config", cfg, "diff", docs, comment, makefile, moved)
-	want := docs + "\tnot applicable\tfalse\n" + comment + "\tnot applicable\tfalse\n" + makefile + "\tunknown\tunknown\n" + moved + "\tnot applicable\tfalse\n"
+	want := docs + "\tnot applicable\tfalse\n" + comment + "\tnot applicable\tfalse\n" + makefile + "\tunknown\t\"unknown(lib/Makefile)\"\n" + moved + "\tnot applicable\tfalse\n"
 	if code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}
 	// Every build is read without --config: the label shows.
 	out, code = capture(t, "--tree", dir, "diff", docs, comment, makefile, moved)
-	want = docs + "\tnone\tfalse\n" + comment + "\tnone\tfalse\n" + makefile + "\t\tunknown\n" + moved + "\tnone\tfalse\n"
+	want = docs + "\tnone\tfalse\n" + comment + "\tnone\tfalse\n" + makefile + "\t\t\"unknown(lib/Makefile)\"\n" + moved + "\tnone\tfalse\n"
 	if code != 0 || out != want {
 		t.Errorf("diff = %q, %d; want %q", out, code, want)
 	}

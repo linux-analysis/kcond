@@ -50,13 +50,13 @@ func (fl Filters) counted(f kernel.File, terms []*kcond.Expr, sources bool) []*k
 }
 
 // test tells whether the line filters hold for a changed line of f whose
-// raw region is region and condition in b is e (see builds.Term), nil when
-// unknown: False when it fails them, True when it passes. With whole, e
-// is the file's with the region true and the answer is for all of its
-// lines: False when none can pass, True when every one does, Unknown
-// when their regions must be read.
+// raw region is region and condition in b is e (see builds.Term), which
+// fails them when unknown: False when it fails them, True when it passes.
+// With whole, e is the file's with the region true and the answer is for
+// all of its lines: False when none can pass, True when every one does,
+// Unknown when their regions must be read.
 func (fl Filters) test(b builds.Build, f kernel.File, region, e *kcond.Expr, whole bool) kcond.Tri {
-	if e == nil || b.Possible(e) == kcond.False {
+	if builds.IsUnknown(e) || b.Possible(e) == kcond.False {
 		return kcond.False
 	}
 	res := kcond.True
@@ -297,13 +297,19 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 			return // the files left change no code
 		}
 		if arches && len(pc.files) == 0 {
+			// As diff has it: the other files the build reads are unknown.
 			var chs []change.FileChange
 			for i := range fds {
 				chs = append(chs, *region(i))
 			}
-			if Unread(d, chs) {
+			var terms []*kcond.Expr
+			for _, p := range ReadByBuild(d, chs) {
+				terms = append(terms, builds.Unknown(p))
+			}
+			if len(terms) == 0 {
 				pc.m.Label = "none"
 			}
+			pc.m.Condition = kcond.Or(terms...).String()
 		}
 		all = append(all, pc.files...)
 		found = append(found, pc)
@@ -372,13 +378,13 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 				if a != kernel.Primary {
 					e = builds.Term(res[i].Cond(a)) // the other arches' builds bear their names
 				}
-				pc.m.Path, pc.m.Condition = f.Path, condText(e)
+				pc.m.Path, pc.m.Condition = f.Path, e.String()
 			}
 		}
 		// A change no arch builds, as --label none or other finds, has its
 		// first file, as diff reads it.
 		if !lines && pc.m.Path == "" && len(pc.files) > 0 {
-			pc.m.Path, pc.m.Condition = pc.files[0].Path, condText(builds.Term(res[0].Cond(build)))
+			pc.m.Path, pc.m.Condition = pc.files[0].Path, builds.Term(res[0].Cond(build)).String()
 		}
 		if rejected || (lines && !pc.hit) {
 			continue
@@ -392,9 +398,6 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 			if fl.Arch != "" && !slices.Contains(sum.Arches, fl.Arch) {
 				continue
 			}
-		}
-		if pc.m.Condition == "" {
-			pc.m.Condition = "unknown"
 		}
 		matches = append(matches, pc.m)
 	}

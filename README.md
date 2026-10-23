@@ -48,9 +48,13 @@ directories and the `asm-generic` headers the `generic-y` and
 a file no Makefile names adds nothing. A header no listed file includes,
 as a uapi header only userspace reads, or one only generated sources,
 linker scripts or boot code read, is a `header`, whose condition is its
-region when that names a `CONFIG_` option and unknown otherwise. An OR
-drops an option Kconfig lets on only with another of its terms:
-`CONFIG_JFFS2_FS || CONFIG_MTD` is `CONFIG_MTD`, as JFFS2 depends on MTD.
+region when that names a `CONFIG_` option and unknown otherwise. A file
+of unknown condition, as such a header or a source no Makefile lists, is
+the atom `"unknown(PATH)"` in a condition: no `.config` decides it, so
+`"unknown(lib/c.c)" || CONFIG_A` applies with `CONFIG_A` and is unknown
+without. An OR drops an option Kconfig lets on only with another of its
+terms: `CONFIG_JFFS2_FS || CONFIG_MTD` is `CONFIG_MTD`, as JFFS2 depends
+on MTD.
 
 An object `obj-y` lists is linked only where its directory is entered
 through `obj-y` too, so under `obj-$(CONFIG_X) += dir/` it needs
@@ -96,7 +100,12 @@ its diff to its first parent, everything it brings. A commit that
 changes only what the build never reads, documentation,
 selftests, perf or comments, does not apply, with the label `none` and
 the condition `false`; one that changes no kernel code but Makefiles,
-Kconfig or device trees has no label and is unknown.
+Kconfig or device trees has no label, and its condition names those
+files as unknown. Next to kernel code they name nothing, as the code
+decides:
+
+    $ kcond diff 2ac7bad110be
+    2ac7bad110be		"unknown(arch/arm64/boot/dts/renesas/r9a09g087.dtsi)"
 
 `search` lists the commits of a range whose change passes filters, oldest
 first, each with the first changed file that passed and the condition it
@@ -230,8 +239,8 @@ The packages build on one another:
   source, is compiled.
 - `builds` reads a tree as each architecture builds it: a `Session` gives
   the builds, `Build.Eval` a file's condition in one, `Counted` the lines
-  of a file that count in a change, `Combine` and `Summarize` the
-  condition and the arch label of a change.
+  of a file that count in a change, `Term` what a file adds to the
+  condition of a change and `Summarize` its arch label.
 - `change` reads what a commit changes in each file, and `analysis` the
   commits themselves: `Walk` lists them, `Resolve` crawls each revision
   once for all the files that need it, and `Diff` and `Search` answer as
