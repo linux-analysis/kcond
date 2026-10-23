@@ -22,7 +22,43 @@ func analyze(t *testing.T, files map[string]string, env Env) *Values {
 	if len(tr.Warnings) != 0 {
 		t.Fatalf("warnings: %q", tr.Warnings)
 	}
-	return Analyze(tr, Options{Off: []string{"COMPILE_TEST"}})
+	opts := Options{Off: []string{"COMPILE_TEST"}}
+	v := Analyze(tr, opts)
+	naive := analyzePasses(tr, opts)
+	for _, s := range tr.list {
+		if v.sets[s.idx] != naive.sets[s.idx] {
+			t.Errorf("Analyze: %s = %s, the passes give %s", s.Name, v.sets[s.idx], naive.sets[s.idx])
+		}
+	}
+	return v
+}
+
+// analyzePasses is Analyze as passes over every symbol until no set
+// changes, the oracle for its worklist.
+func analyzePasses(tr *Tree, opts Options) *Values {
+	v, syms := start(tr, opts)
+	for {
+		for changed := true; changed; {
+			changed = false
+			for _, s := range syms {
+				old := v.sets[s.idx]
+				if n := old | v.derive(s); n != old {
+					v.sets[s.idx] = n
+					changed = true
+				}
+			}
+		}
+		stuck := false
+		for _, s := range syms {
+			if v.sets[s.idx] == 0 {
+				v.sets[s.idx] = N
+				stuck = true
+			}
+		}
+		if !stuck {
+			return v
+		}
+	}
 }
 
 func expectSets(t *testing.T, v *Values, want map[string]string) {
@@ -186,6 +222,28 @@ config INV
 `}, nil)
 	// Without a modules symbol every tristate is a bool.
 	expectSets(t, v, map[string]string{"FOO": "ny", "INV": "y"})
+}
+
+// A dependency cycle leaves its symbols unknown until they are taken as
+// n, after which what depends on them is derived again.
+func TestAnalyzeCycle(t *testing.T) {
+	v := analyze(t, map[string]string{"Kconfig": base + `
+config A
+	bool "a"
+	depends on B
+
+config B
+	bool "b"
+	depends on A || C
+
+config C
+	def_bool y
+
+config D
+	bool "d"
+	depends on D
+`}, nil)
+	expectSets(t, v, map[string]string{"A": "ny", "B": "ny", "C": "y", "D": "n"})
 }
 
 func TestAnalyzeChoice(t *testing.T) {

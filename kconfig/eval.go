@@ -99,8 +99,58 @@ func (s *Symbol) tracked() bool {
 	return len(s.Files) > 0 && (s.Type == Bool || s.Type == Tristate)
 }
 
-// Analyze computes the value sets of t's symbols.
+// Analyze computes the value sets of t's symbols: each is derived from
+// the sets of the symbols its definition names, again whenever one of
+// those widens, until none does. The sets only widen, so the order does
+// not matter but for the guess modulesSet makes before the modules symbol
+// is derived, which the name order keeps as it was.
 func Analyze(t *Tree, opts Options) *Values {
+	v, syms := start(t, opts)
+	dependents := t.dependents(syms)
+	queued := make([]bool, len(t.list))
+	queue := make([]*Symbol, 0, 2*len(syms))
+	enqueue := func(s *Symbol) {
+		if !queued[s.idx] {
+			queued[s.idx] = true
+			queue = append(queue, s)
+		}
+	}
+	for _, s := range syms {
+		enqueue(s)
+	}
+	for {
+		for i := 0; i < len(queue); i++ {
+			s := queue[i]
+			queued[s.idx] = false
+			old := v.sets[s.idx]
+			if n := old | v.derive(s); n != old {
+				v.sets[s.idx] = n
+				for _, d := range dependents[s.idx] {
+					enqueue(d)
+				}
+			}
+		}
+		queue = queue[:0]
+		// What is still unknown takes part only in dependency cycles,
+		// which kconfig rejects; take n and go on.
+		for _, s := range syms {
+			if v.sets[s.idx] == 0 {
+				v.sets[s.idx] = N
+				enqueue(s)
+				for _, d := range dependents[s.idx] {
+					enqueue(d)
+				}
+			}
+		}
+		if len(queue) == 0 {
+			return v
+		}
+	}
+}
+
+// start makes the Values of t with the symbols opts turn off at n, and
+// lists the symbols to derive, in name order.
+func start(t *Tree, opts Options) (*Values, []*Symbol) {
 	v := &Values{t: t, sets: make([]Set, len(t.list))}
 	off := map[string]bool{}
 	for _, s := range opts.Off {
@@ -117,31 +167,36 @@ func Analyze(t *Tree, opts Options) *Values {
 		}
 	}
 	slices.SortFunc(syms, func(a, b *Symbol) int { return strings.Compare(a.Name, b.Name) })
-	for {
-		for changed := true; changed; {
-			changed = false
-			for _, s := range syms {
-				old := v.sets[s.idx]
-				if n := old | v.derive(s); n != old {
-					v.sets[s.idx] = n
-					changed = true
+	return v, syms
+}
+
+// dependents lists, by symbol, the symbols of syms whose derivation reads
+// its set (see derive): those naming it in a prompt, default, dependency,
+// select or imply, those in a choice whose other members prompt on it, and
+// every one for the modules symbol (see modulesSet).
+func (t *Tree) dependents(syms []*Symbol) [][]*Symbol {
+	by := make([][]*Symbol, len(t.list))
+	mark := make([]int, len(t.list)) // s.idx+1 once s is listed under a symbol
+	for _, s := range syms {
+		add := func(e *Expr) {
+			if d := e.sym; e.Op == OpSym && d != nil && mark[d.idx] != s.idx+1 {
+				mark[d.idx] = s.idx + 1
+				by[d.idx] = append(by[d.idx], s)
+			}
+		}
+		s.walk(add)
+		if s.Choice != nil {
+			for _, o := range s.Choice.Members {
+				for _, e := range o.Prompts {
+					walkExpr(e, add)
 				}
 			}
 		}
-		// What is still unknown takes part only in dependency cycles,
-		// which kconfig rejects; take n and go on.
-		stuck := false
-		for _, s := range syms {
-			if v.sets[s.idx] == 0 {
-				v.sets[s.idx] = N
-				stuck = true
-			}
-		}
-		if !stuck {
-			break
+		if t.modules != nil {
+			add(&Expr{Op: OpSym, sym: t.modules})
 		}
 	}
-	return v
+	return by
 }
 
 // modulesSet is the value set of the modules symbol, n without one.

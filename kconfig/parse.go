@@ -109,32 +109,41 @@ func Parse(fsys fs.FS, env Env) (*Tree, error) {
 // evaluation then reads without a lookup by name.
 func (t *Tree) link() {
 	t.modules = t.Syms[t.Modules]
-	var walk func(e *Expr)
-	walk = func(e *Expr) {
-		switch {
-		case e == nil:
-		case e.Op != OpSym:
-			walk(e.L)
-			walk(e.R)
-		case !e.Quoted:
+	for _, s := range t.list {
+		s.walk(func(e *Expr) {
+			if e.Op != OpSym || e.Quoted {
+				return
+			}
 			switch e.Name {
 			case "y", "m", "n", modulesRef:
 			default:
 				e.sym = t.Syms[e.Name]
 			}
+		})
+	}
+}
+
+// walk calls f on every node of every expression of s.
+func (s *Symbol) walk(f func(e *Expr)) {
+	for _, es := range [][]*Expr{s.Prompts, s.RevDep, s.Implied, s.DirDep} {
+		for _, e := range es {
+			walkExpr(e, f)
 		}
 	}
-	for _, s := range t.list {
-		for _, es := range [][]*Expr{s.Prompts, s.RevDep, s.Implied, s.DirDep} {
-			for _, e := range es {
-				walk(e)
-			}
-		}
-		for _, d := range s.Defaults {
-			walk(d.Value)
-			walk(d.Cond)
-		}
+	for _, d := range s.Defaults {
+		walkExpr(d.Value, f)
+		walkExpr(d.Cond, f)
 	}
+}
+
+// walkExpr calls f on every node of e; nil is nothing.
+func walkExpr(e *Expr, f func(e *Expr)) {
+	if e == nil {
+		return
+	}
+	f(e)
+	walkExpr(e.L, f)
+	walkExpr(e.R, f)
 }
 
 // block is an if, menu or choice block whose conditions apply to the
