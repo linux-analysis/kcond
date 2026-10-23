@@ -51,6 +51,7 @@ type Symbol struct {
 	Choice       *Choice
 	Env          string // the variable an "option env" symbol reads
 	Transitional bool
+	idx          int // the symbol's position in Tree.list
 }
 
 // Default is a default value and the condition under which it applies.
@@ -74,6 +75,9 @@ type Tree struct {
 	Env      Env
 	Files    []string // in the order read
 	Warnings []string
+
+	list    []*Symbol // Syms in the order made, by idx
+	modules *Symbol   // the symbol Modules names
 }
 
 // Parse reads the Kconfig tree for the architecture env["SRCARCH"]
@@ -97,7 +101,40 @@ func Parse(fsys fs.FS, env Env) (*Tree, error) {
 	if p.t.Modules == "" && p.t.Syms["MODULES"] != nil {
 		p.t.Modules = "MODULES"
 	}
+	p.t.link()
 	return p.t, nil
+}
+
+// link points every symbol reference of the tree at its symbol, which the
+// evaluation then reads without a lookup by name.
+func (t *Tree) link() {
+	t.modules = t.Syms[t.Modules]
+	var walk func(e *Expr)
+	walk = func(e *Expr) {
+		switch {
+		case e == nil:
+		case e.Op != OpSym:
+			walk(e.L)
+			walk(e.R)
+		case !e.Quoted:
+			switch e.Name {
+			case "y", "m", "n", modulesRef:
+			default:
+				e.sym = t.Syms[e.Name]
+			}
+		}
+	}
+	for _, s := range t.list {
+		for _, es := range [][]*Expr{s.Prompts, s.RevDep, s.Implied, s.DirDep} {
+			for _, e := range es {
+				walk(e)
+			}
+		}
+		for _, d := range s.Defaults {
+			walk(d.Value)
+			walk(d.Cond)
+		}
+	}
 }
 
 // block is an if, menu or choice block whose conditions apply to the
@@ -143,8 +180,9 @@ func (p *parser) warnf(file string, line int, format string, args ...any) {
 func (p *parser) sym(name string) *Symbol {
 	s := p.t.Syms[name]
 	if s == nil {
-		s = &Symbol{Name: name}
+		s = &Symbol{Name: name, idx: len(p.t.list)}
 		p.t.Syms[name] = s
+		p.t.list = append(p.t.list, s)
 	}
 	return s
 }

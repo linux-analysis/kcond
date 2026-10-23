@@ -34,6 +34,9 @@ type Expr struct {
 	Name   string // OpSym; raw text for OpOpaque
 	Quoted bool   // OpSym: a quoted constant
 	L, R   *Expr
+	// sym is the symbol an OpSym names, linked once the tree is read: nil
+	// for a constant, a quoted string and a name no Kconfig file defines.
+	sym *Symbol
 }
 
 func symExpr(name string) *Expr { return &Expr{Op: OpSym, Name: name} }

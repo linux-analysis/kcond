@@ -89,20 +89,30 @@ type Values struct {
 	searched sync.Map
 
 	t       *Tree
-	sets    map[string]Set
-	off     map[string]bool
-	modules Set // the value of the modules symbol in the world being evaluated
+	sets    []Set // by Symbol.idx; a symbol not tracked, or off, is n
+	modules Set   // the value of the modules symbol in the world being evaluated
+}
+
+// tracked tells whether the analysis gives s a set: a bool or tristate
+// some Kconfig file defines.
+func (s *Symbol) tracked() bool {
+	return len(s.Files) > 0 && (s.Type == Bool || s.Type == Tristate)
 }
 
 // Analyze computes the value sets of t's symbols.
 func Analyze(t *Tree, opts Options) *Values {
-	v := &Values{t: t, sets: map[string]Set{}, off: map[string]bool{}}
+	v := &Values{t: t, sets: make([]Set, len(t.list))}
+	off := map[string]bool{}
 	for _, s := range opts.Off {
-		v.off[s] = true
+		off[s] = true
 	}
 	var syms []*Symbol
-	for _, s := range t.Syms {
-		if (s.Type == Bool || s.Type == Tristate) && len(s.Files) > 0 {
+	for _, s := range t.list {
+		switch {
+		case !s.tracked():
+		case off[s.Name]:
+			v.sets[s.idx] = N
+		default:
 			syms = append(syms, s)
 		}
 	}
@@ -111,9 +121,9 @@ func Analyze(t *Tree, opts Options) *Values {
 		for changed := true; changed; {
 			changed = false
 			for _, s := range syms {
-				old := v.sets[s.Name]
+				old := v.sets[s.idx]
 				if n := old | v.derive(s); n != old {
-					v.sets[s.Name] = n
+					v.sets[s.idx] = n
 					changed = true
 				}
 			}
@@ -122,8 +132,8 @@ func Analyze(t *Tree, opts Options) *Values {
 		// which kconfig rejects; take n and go on.
 		stuck := false
 		for _, s := range syms {
-			if v.sets[s.Name] == 0 {
-				v.sets[s.Name] = N
+			if v.sets[s.idx] == 0 {
+				v.sets[s.idx] = N
 				stuck = true
 			}
 		}
@@ -136,10 +146,7 @@ func Analyze(t *Tree, opts Options) *Values {
 
 // modulesSet is the value set of the modules symbol, n without one.
 func (v *Values) modulesSet() Set {
-	if v.t.Modules == "" {
-		return N
-	}
-	if s := v.lookup(v.t.Modules); s != 0 {
+	if s := v.lookupSym(v.t.modules); s != 0 {
 		return s
 	}
 	return N | Y
@@ -150,9 +157,6 @@ func (v *Values) modulesSet() Set {
 // apart, because both a dependency on m and the demotion of tristates to
 // bools follow the modules symbol.
 func (v *Values) derive(s *Symbol) Set {
-	if v.off[s.Name] {
-		return N
-	}
 	if s.Transitional {
 		if s.Type == Tristate {
 			return N | M | Y
@@ -318,11 +322,15 @@ func (v *Values) choiceMember(s *Symbol, vis Set, tri bool) Set {
 // lookup is the current set of a symbol by name: n for symbols that are
 // undefined, not bool or tristate, or off.
 func (v *Values) lookup(name string) Set {
-	s := v.t.Syms[name]
-	if s == nil || len(s.Files) == 0 || (s.Type != Bool && s.Type != Tristate) || v.off[name] {
+	return v.lookupSym(v.t.Syms[name])
+}
+
+// lookupSym is the current set of s, n for nil or a symbol not tracked.
+func (v *Values) lookupSym(s *Symbol) Set {
+	if s == nil || !s.tracked() {
 		return N
 	}
-	return v.sets[name]
+	return v.sets[s.idx]
 }
 
 // eval is the value set of a Kconfig expression; nil is y.
@@ -348,7 +356,7 @@ func (v *Values) eval(e *Expr) Set {
 		if e.Quoted {
 			return N
 		}
-		return v.lookup(e.Name)
+		return v.lookupSym(e.sym)
 	case OpNot:
 		return notSet(v.eval(e.L))
 	case OpAnd:
@@ -450,7 +458,7 @@ func (v *Values) strings(e *Expr) ([]string, bool) {
 		return []string{name}, true // an undefined symbol's value is its name
 	case s.Type == Bool || s.Type == Tristate:
 		var out []string
-		set := v.lookup(name)
+		set := v.lookupSym(s)
 		if name == v.t.Modules && v.modules != 0 {
 			set = v.modules
 		}
@@ -486,10 +494,10 @@ func (v *Values) Of(name string) Set {
 func (v *Values) Modular(name string) (modular, known bool) {
 	name = strings.TrimPrefix(name, "CONFIG_")
 	s := v.t.Syms[name]
-	if s == nil || len(s.Files) == 0 || (s.Type != Bool && s.Type != Tristate) || s.Transitional {
+	if s == nil || !s.tracked() || s.Transitional {
 		return false, false
 	}
-	return v.lookup(name)&M != 0, true
+	return v.lookupSym(s)&M != 0, true
 }
 
 // Selects lists, sorted and with CONFIG_, the symbols that name (with or
