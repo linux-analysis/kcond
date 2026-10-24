@@ -35,6 +35,9 @@ func TestEvalAndConfig(t *testing.T) {
 	if code != 0 || !strings.Contains(out, `"build": "x86_64"`) || !strings.Contains(out, `"version": "6.12.43"`) {
 		t.Errorf("config = %q, %d", out, code)
 	}
+	if out, _ := capture(t, "--json", "--config", cfg, "eval", "CONFIG_A && CONFIG_B"); !strings.Contains(out, `"condition": "CONFIG_A && CONFIG_B"`) {
+		t.Errorf("eval --json = %q, want && unescaped", out)
+	}
 	if _, code := capture(t, "eval"); code != 2 {
 		t.Errorf("eval without a config exited %d, want 2", code)
 	}

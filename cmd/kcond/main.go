@@ -340,6 +340,7 @@ func print(out io.Writer, o opts, v any, text func()) error {
 		return nil
 	}
 	enc := json.NewEncoder(out)
+	enc.SetEscapeHTML(false) // conditions hold && and <, which Go escapes for HTML by default
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
 }
