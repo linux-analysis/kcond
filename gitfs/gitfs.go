@@ -300,6 +300,12 @@ func (t *Tree) GrepLines(strs []string, globs ...string) (map[string][]string, e
 	return grepLines(t.ctx, t.dir, t.rev, strs, globs)
 }
 
+// GrepLines is Tree.GrepLines at rev for a caller without a Tree, which
+// opening would list the whole revision.
+func GrepLines(ctx context.Context, dir, rev string, strs []string, globs ...string) (map[string][]string, error) {
+	return grepLines(ctx, dir, rev, strs, globs)
+}
+
 func (t *Tree) pathErr(op, name string, err error) error {
 	return &fs.PathError{Op: op, Path: name, Err: err}
 }

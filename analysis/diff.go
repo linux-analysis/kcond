@@ -3,7 +3,9 @@ package analysis
 import (
 	"cmp"
 	"context"
+	"path"
 	"slices"
+	"strings"
 
 	"github.com/linux-analysis/kcond"
 	"github.com/linux-analysis/kcond/builds"
@@ -56,6 +58,7 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 	var counted [][]bool  // changes[i][j] counts in its commit (see builds.Counted)
 	var others [][]string // when no file of the commit counts, the files it changes the build reads
 	var files []*File
+	var readErr error
 	err = Walk(ctx, dir, args, o.Warn, func(c Commit, d string) {
 		all := change.Changes(cat, c.Hash, d)
 		// A file whose changed lines are all comments decides nothing.
@@ -75,11 +78,14 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 		}
 		counted = append(counted, counts)
 		var read []string
-		if !slices.Contains(counts, true) {
-			read = ReadByBuild(d, all)
+		if !slices.Contains(counts, true) && readErr == nil {
+			read, readErr = ReadByBuild(ctx, dir, c.Hash, d, all)
 		}
 		others = append(others, read)
 	})
+	if err == nil {
+		err = readErr
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +152,9 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 
 // ReadByBuild returns the files a diff changes that the build reads: those
 // not outside it (see kernel.OutsideBuild), except a kernel file whose
-// changed lines are all comments, as changes tells.
-func ReadByBuild(diff string, changes []change.FileChange) []string {
+// changed lines are all comments, as changes tells, and a file under
+// scripts/ that nothing names at rev (see namedScripts).
+func ReadByBuild(ctx context.Context, dir, rev, diff string, changes []change.FileChange) ([]string, error) {
 	comments := map[string]bool{}
 	for _, ch := range changes {
 		comments[ch.Path] = !ch.Code
@@ -160,7 +167,64 @@ func ReadByBuild(diff string, changes []change.FileChange) []string {
 			}
 		}
 	}
-	return read
+	return namedScripts(ctx, dir, rev, read)
+}
+
+// namedScripts drops from paths the files under scripts/ the build never
+// runs: those no Kbuild file and no other file under scripts/ names, by
+// their base name without extension as a whole word, as hostprogs-y +=
+// sorttable names scripts/sorttable.c and link-vmlinux.sh names mksysmap.
+// A semantic patch, which coccicheck runs through a glob, is named by
+// nothing. Kbuild files under scripts/ are read by the build and stay.
+func namedScripts(ctx context.Context, dir, rev string, paths []string) ([]string, error) {
+	stems := map[string]string{}
+	var words []string
+	for _, p := range paths {
+		if b := path.Base(p); strings.HasPrefix(p, "scripts/") && !strings.Contains(b, "Makefile") && !strings.Contains(b, "Kbuild") {
+			if ext := path.Ext(b); ext != b {
+				b = strings.TrimSuffix(b, ext)
+			}
+			stems[p] = b
+			words = append(words, b)
+		}
+	}
+	if len(words) == 0 {
+		return paths, nil
+	}
+	lines, err := gitfs.GrepLines(ctx, dir, rev, words, "*Makefile*", "*Kbuild*", "scripts/")
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(paths, func(p string) bool {
+		stem, ok := stems[p]
+		if !ok {
+			return false
+		}
+		for file, ls := range lines {
+			if file != p && !kernel.OutsideBuild(file) && slices.ContainsFunc(ls, func(l string) bool { return hasWord(l, stem) }) {
+				return false
+			}
+		}
+		return true
+	}), nil
+}
+
+// hasWord tells whether s holds w with no letter, digit or _ on either
+// side, as git grep -w does.
+func hasWord(s, w string) bool {
+	word := func(b byte) bool {
+		return b == '_' || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
+	}
+	for i := 0; ; i++ {
+		j := strings.Index(s[i:], w)
+		if j < 0 {
+			return false
+		}
+		i += j
+		if (i == 0 || !word(s[i-1])) && (i+len(w) == len(s) || !word(s[i+len(w)])) {
+			return true
+		}
+	}
 }
 
 // condText writes e, "" for nil.

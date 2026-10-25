@@ -302,8 +302,13 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 			for i := range fds {
 				chs = append(chs, *region(i))
 			}
+			read, err := ReadByBuild(ctx, dir, c.Hash, d, chs)
+			if err != nil {
+				firstErr = err
+				return
+			}
 			var terms []*kcond.Expr
-			for _, p := range ReadByBuild(d, chs) {
+			for _, p := range read {
 				terms = append(terms, builds.Unknown(p))
 			}
 			if len(terms) == 0 {

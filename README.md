@@ -97,12 +97,17 @@ looked up in each. A merge in a range reads as its
 own change, the hunks that differ from every parent, as `git show`
 prints them, so a clean merge reads `none`; a merge named alone reads as
 its diff to its first parent, everything it brings. A commit that
-changes only what the build never reads, documentation,
-selftests, perf or comments, does not apply, with the label `none` and
-the condition `false`; one that changes no kernel code but Makefiles,
-Kconfig or device trees has no label, and its condition names those
-files as unknown. Next to kernel code they name nothing, as the code
-decides:
+changes only what the build never reads, documentation, selftests,
+perf, comments, or a file under `scripts/` that no Makefile and no other
+script names, does not apply, with the label `none` and the condition
+`false`; one that changes no kernel code but Makefiles, Kconfig, device
+trees or the scripts and tools the build runs has no label, and its
+condition names those files as unknown. A script is named by its name
+without extension, as a whole word: `hostprogs-y += sorttable` names
+`scripts/sorttable.c` and `link-vmlinux.sh` names `mksysmap`, while a
+semantic patch under `scripts/coccinelle`, which `coccicheck` runs
+through a glob, is named by nothing. Next to kernel code these files
+name nothing, as the code decides:
 
     $ kcond diff 2ac7bad110be
     2ac7bad110be		"unknown(arch/arm64/boot/dts/renesas/r9a09g087.dtsi)"

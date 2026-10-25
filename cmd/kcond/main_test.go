@@ -318,6 +318,39 @@ func TestDiffOutsideBuild(t *testing.T) {
 	}
 }
 
+// A file under scripts/ that no Makefile and no other script names is one
+// the build never reads: a semantic patch, which coccicheck runs through a
+// glob, reads none, while mksysmap, which link-vmlinux.sh names, stays
+// unknown. The name is the base name without extension, as a whole word,
+// and a file naming itself does not count; a Kbuild file is always read.
+func TestDiffScripts(t *testing.T) {
+	dir, _ := newKernel(t)
+	commitFile(t, dir, "scripts/link-vmlinux.sh", "#!/bin/sh\nsh scripts/mksysmap vmlinux\necho foobar\n")
+	mksysmap := commitFile(t, dir, "scripts/mksysmap", "#!/bin/sh\nnm $1\n")
+	cocci := commitFile(t, dir, "scripts/coccinelle/api/x.cocci", "// x: a semantic patch\n")
+	foo := commitFile(t, dir, "scripts/foo.sh", "echo foo\n")
+	lib := commitFile(t, dir, "scripts/Makefile.lib", "# lib\n")
+	out, code := capture(t, "--tree", dir, "diff", mksysmap, cocci, foo, lib)
+	want := mksysmap + "\t\t\"unknown(scripts/mksysmap)\"\n" + cocci + "\tnone\tfalse\n" + foo + "\tnone\tfalse\n" + lib + "\t\t\"unknown(scripts/Makefile.lib)\"\n"
+	if code != 0 || out != want {
+		t.Errorf("diff = %q, %d; want %q", out, code, want)
+	}
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.0 Kernel Configuration\nCONFIG_X86_64=y\nCONFIG_A=y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = capture(t, "--tree", dir, "--config", cfg, "diff", mksysmap, cocci)
+	want = mksysmap + "\tunknown\t\"unknown(scripts/mksysmap)\"\n" + cocci + "\tnot applicable\tfalse\n"
+	if code != 0 || out != want {
+		t.Errorf("diff --config = %q, %d; want %q", out, code, want)
+	}
+	out, code = capture(t, "--tree", dir, "search", mksysmap+"^.."+lib, "--label", "none")
+	want = cocci + "\t\tfalse\n" + foo + "\t\tfalse\n"
+	if code != 0 || out != want {
+		t.Errorf("search --label none = %q, %d; want %q", out, code, want)
+	}
+}
+
 // A commit's files are judged by the Makefiles at the commit, so a file
 // it lists for the first time is built; a file it deletes is read at the
 // parent.
