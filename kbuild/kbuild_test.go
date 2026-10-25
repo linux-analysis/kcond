@@ -247,6 +247,7 @@ endif
 ifndef CONFIG_F
 obj-y += f.o
 endif
+avx_supported := $(call as-instr,vpxor %xmm0,yes,no)
 ifeq ($(avx_supported),yes)
 obj-$(CONFIG_G) += avx.o
 endif
@@ -318,6 +319,27 @@ endif
 		"drivers/d/foo.c": "true",
 		"drivers/d/bar.c": "",
 		"drivers/d/c.c":   "CONFIG_C && CONFIG_D",
+	})
+}
+
+// A variable nothing sets is empty, as make reads it with no environment:
+// Kbuild passes a directory's Makefile only what the top one exports.
+func TestUnsetVariableIsEmpty(t *testing.T) {
+	expect(t, crawl(t, dirTree(`
+ifeq ($(UNSET),)
+UNSET := x
+endif
+obj-$(CONFIG_A) += $(UNSET).o
+ifdef NEVER
+obj-y += never.o
+endif
+ifneq ($(ALSO),)
+obj-y += also.o
+endif
+`, "x.c", "never.c", "also.c")), map[string]string{
+		"drivers/d/x.c":     "CONFIG_A",
+		"drivers/d/never.c": "",
+		"drivers/d/also.c":  "",
 	})
 }
 

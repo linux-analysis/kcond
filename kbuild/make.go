@@ -78,10 +78,8 @@ type evaluator struct {
 	includes []string
 	read     []string // every file run so far, in order: $(MAKEFILE_LIST)
 	// expanding guards against recursive variables that refer to
-	// themselves; unknown records a reference to a variable that is
-	// neither assigned, predefined nor a Kconfig symbol.
+	// themselves.
 	expanding map[string]bool
-	unknown   bool
 	// frozen is set once the Makefile is read; only then are variable
 	// values cached, as later assignments could change them before.
 	frozen bool
@@ -137,7 +135,7 @@ func (e *evaluator) errorf(format string, args ...any) {
 }
 
 // runtime lists variables make itself sets from how it was invoked. Their
-// values are unknown even where a Makefile appends to them.
+// values are opaque even where a Makefile appends to them.
 var runtime = map[string]bool{"MAKEFLAGS": true, "MAKECMDGOALS": true, "CURDIR": true, "MAKEFILE_LIST": true,
 	".FEATURES": true, "MAKELEVEL": true, "MAKEOVERRIDES": true, "MFLAGS": true, ".VARIABLES": true}
 
@@ -639,6 +637,9 @@ func (e *evaluator) value(name string) []cword {
 	if name == "MAKEFILE_LIST" {
 		return literal(strings.Join(e.read, " "))
 	}
+	if runtime[name] {
+		return []cword{{cond: kcond.Const(true), text: "$(" + name + ")", opaque: true}}
+	}
 	if v, ok := e.preVar(name); ok {
 		return literal(v)
 	}
@@ -648,7 +649,8 @@ func (e *evaluator) value(name string) []cword {
 	if kcond.IsSymbol(name) {
 		return []cword{{cond: kcond.Var(name, kcond.Builtin), text: "y"}, {cond: kcond.Var(name, kcond.Module), text: "m"}}
 	}
-	e.unknown = true
+	// A variable nothing sets is empty, as make reads it with no
+	// environment: a directory's Makefile gets only what the top one exports.
 	return nil
 }
 
@@ -1060,7 +1062,8 @@ func (e *evaluator) function(name string, args []string) []cword {
 		var out []cword
 		for _, w := range e.expand(arg(1)) {
 			hit := slices.ContainsFunc(pats, func(p string) bool { return matches(p, w.text) })
-			if hit == (name == "filter") {
+			// An opaque word may match: it stays, opaque.
+			if w.opaque || hit == (name == "filter") {
 				out = append(out, w)
 			}
 		}
@@ -1281,9 +1284,7 @@ func (e *evaluator) eval(text string) {
 		e.errorf("$(eval %s) not evaluated", abbreviate(text, 60))
 		return
 	}
-	unknown := e.unknown
 	e.block(t, " in $(eval)")
-	e.unknown = unknown
 }
 
 // evalText expands text for $(eval). A reference whose value holds
@@ -1473,18 +1474,17 @@ func (e *evaluator) elseBranch(rest string) {
 	e.update()
 }
 
-// condition evaluates an ifdef/ifndef/ifeq/ifneq line. Conditions that
-// depend on variables this evaluator does not know become opaque atoms.
+// condition evaluates an ifdef/ifndef/ifeq/ifneq line. A condition that
+// depends on an opaque word, as of $(shell), becomes an opaque atom.
 func (e *evaluator) condition(kind, rest string) *kcond.Expr {
-	e.unknown = false
 	var c *kcond.Expr
 	switch kind {
 	case "ifdef", "ifndef":
 		name := strings.TrimSpace(e.text(rest))
 		if v := e.vars[name]; v != nil && len(v.entries) > 0 {
 			c = e.assigned(v)
-		} else if ws := e.value(name); !e.unknown {
-			c, _ = e.nonEmpty(ws)
+		} else {
+			c, _ = e.nonEmpty(e.value(name))
 		}
 		if c == nil {
 			c = kcond.Var("defined("+name+")", kcond.Enabled)
@@ -1534,15 +1534,11 @@ func splitIfeq(s string) (string, string, bool) {
 
 // equal is the condition under which the expansions of a and b are the same
 // list of words. One side must not depend on Kconfig symbols; otherwise, when
-// a side uses an unknown variable, or when symbols are compared to text other
+// a side holds an opaque word, or when symbols are compared to text other
 // than their y and m, the condition is an opaque atom.
 func (e *evaluator) equal(a, b string) *kcond.Expr {
 	atom := kcond.Var(a+" == "+b, kcond.Enabled)
-	e.unknown = false
 	wa, wb := e.expand(a), e.expand(b)
-	if e.unknown {
-		return atom
-	}
 	switch {
 	case fixed(wa) && fixed(wb):
 		return kcond.Const(joinWords(wa) == joinWords(wb))
