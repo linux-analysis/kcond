@@ -1413,7 +1413,9 @@ func (e *evaluator) include(rest string) {
 			continue
 		}
 		p := cleanPath(w.text)
-		if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "../") || slices.Contains(e.includes, p) {
+		// include/config/ is Kconfig's output (auto.conf), which a built
+		// checkout holds: read, it would set every CONFIG_ variable.
+		if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "../") || strings.HasPrefix(p, "include/config/") || slices.Contains(e.includes, p) {
 			continue
 		}
 		if st, err := fs.Stat(e.fsys, p); err != nil || st.IsDir() {

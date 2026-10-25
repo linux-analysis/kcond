@@ -402,6 +402,18 @@ obj-$(CONFIG_AMD) += amd.o
 	})
 }
 
+// A built checkout holds Kconfig's output, include/config/auto.conf, and
+// the top Makefile includes it; read, it would turn every obj-$(CONFIG_X)
+// into obj-y or nothing, as the configured build does.
+func TestIncludeSkipsBuildOutput(t *testing.T) {
+	m := dirTree(`
+include $(objtree)/include/config/auto.conf
+obj-$(CONFIG_A) += a.o
+`, "a.c")
+	m["include/config/auto.conf"] = "CONFIG_A=y\n"
+	expect(t, crawl(t, m), map[string]string{"drivers/d/a.c": "CONFIG_A"})
+}
+
 // Until v6.1 arch/x86/kernel built its head code and linker script through
 // extra-y; later releases name the script in always-y.
 func TestExtraObjects(t *testing.T) {
