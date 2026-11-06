@@ -72,11 +72,11 @@ func (ds *Dirs) reuse(mk string, ev *evaluator) (dirResult, bool) {
 	}
 	for _, rd := range en.reads {
 		if rd.exported {
-			ws, ok := ev.exportedVar(rd.name)
+			ws, ok := ev.topExport(rd.name)
 			if ok != rd.ok || !slices.EqualFunc(ws, rd.words, sameWord) {
 				return dirResult{}, false
 			}
-		} else if v, ok := ev.preVar(rd.name); ok != rd.ok || v != rd.value {
+		} else if v, ok := ev.pre[rd.name]; ok != rd.ok || v != rd.value {
 			return dirResult{}, false
 		}
 	}

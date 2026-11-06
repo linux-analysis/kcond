@@ -116,13 +116,17 @@ func (e *evaluator) preVar(name string) (string, bool) {
 
 // exportedVar is the value of a variable the top-level Makefile exports.
 func (e *evaluator) exportedVar(name string) ([]cword, bool) {
-	var ws []cword
-	ok := e.parent != nil && e.parent.exported[name]
-	if ok {
-		ws = e.parent.exportedValue(name)
-	}
+	ws, ok := e.topExport(name)
 	e.reads = append(e.reads, outerRead{name: name, exported: true, ok: ok, words: ws})
 	return ws, ok
+}
+
+// topExport is exportedVar without the record in reads.
+func (e *evaluator) topExport(name string) ([]cword, bool) {
+	if e.parent == nil || !e.parent.exported[name] {
+		return nil, false
+	}
+	return e.parent.exportedValue(name), true
 }
 
 func newEvaluator(fsys fs.FS, dir string, pre map[string]string) *evaluator {
