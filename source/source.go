@@ -101,7 +101,7 @@ func tokenize(lines []string, cpp []*kcond.Expr, text []string) []ctoken {
 		if inDirective || dead {
 			continue
 		}
-		toks = append(toks, lexLine(stripped, li)...)
+		toks = lexLine(toks, stripped, li)
 	}
 	return toks
 }
@@ -137,9 +137,9 @@ func collapse(line string) string {
 	return b.String()
 }
 
-// lexLine tokenizes one line with its comments stripped.
-func lexLine(line string, li int) []ctoken {
-	var toks []ctoken
+// lexLine appends to toks the tokens of one line with its comments
+// stripped.
+func lexLine(toks []ctoken, line string, li int) []ctoken {
 	for i := 0; i < len(line); {
 		c := line[i]
 		switch {
