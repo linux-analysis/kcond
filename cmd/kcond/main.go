@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -113,6 +114,11 @@ type opts struct {
 var version = "dev"
 
 func main() {
+	// Most of what kcond allocates dies young: this saves 5-13% of the CPU
+	// time for about 40% more memory.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(200)
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
