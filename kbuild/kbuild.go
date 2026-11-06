@@ -337,14 +337,9 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	var scan sync.WaitGroup
 	var scanErr error
-	var listed *incListing
 	if r.Includes = opts.Includes; r.Includes == nil {
-		scan.Go(func() { r.Includes, scanErr = ScanIncludes(fsys) })
-		if slices.ContainsFunc(opts.Lookups, func(p string) bool { return path.Ext(p) == ".h" }) {
-			// A listing that fails is tried again, and reported, at the
-			// first lookup.
-			scan.Go(func() { listed, _ = listIncludes(fsys) })
-		}
+		headers := slices.ContainsFunc(opts.Lookups, func(p string) bool { return path.Ext(p) == ".h" })
+		scan.Go(func() { r.Includes, scanErr = scanIncludes(fsys, headers) })
 	}
 	if r.Dirs = opts.Dirs; r.Dirs == nil {
 		r.Dirs = &Dirs{done: map[string]dirEntry{}}
@@ -500,9 +495,6 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	}
 	if scan.Wait(); scanErr != nil {
 		return nil, scanErr
-	}
-	if listed != nil {
-		r.Includes.listed = listed
 	}
 	r.include(fsys)
 	r.subdirFlags = nil

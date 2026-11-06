@@ -231,19 +231,46 @@ func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 	return ds, nil
 }
 
+// namingSources lists, sorted, the .c and .S files with a grepped line naming
+// a .c or .S file.
+// shortcut: #/*c*/include "x.c" matches no directive string, so such a file
+// is left out, as listIncludes leaves it out for headers; v7.3 has none.
+func (l *incListing) namingSources() []string {
+	var files []string
+	for f, ls := range l.grepped {
+		if ext := path.Ext(f); (ext == ".c" || ext == ".S") && slices.ContainsFunc(ls, func(line string) bool {
+			return strings.Contains(line, `.c"`) || strings.Contains(line, `.S"`)
+		}) {
+			files = append(files, f)
+		}
+	}
+	slices.Sort(files)
+	return files
+}
+
 // ScanIncludes finds the #include "file.c" and #include "file.S"
 // directives of the .c and .S files of fsys, and the module declarations
 // of its Rust files. A name is looked up next to the including file, then
 // in each directory above it, as the -I$(src) and -I$(srctree) of Kbuild
 // flags find it; a name the tree lacks, such as a generated table, is left
 // out. Without GrepFS every source is read.
-func ScanIncludes(fsys fs.FS) (*Includes, error) {
+func ScanIncludes(fsys fs.FS) (*Includes, error) { return scanIncludes(fsys, false) }
+
+// scanIncludes is ScanIncludes that, with list, lists the #include lines of
+// the tree as well (see Includes) and takes the .c and .S files to read from
+// them, not from a grep of its own. A listing that fails is tried again, and
+// reported, at the first lookup. The Rust files are read meanwhile.
+func scanIncludes(fsys fs.FS, list bool) (*Includes, error) {
+	inc := &Includes{Targets: map[string][]Include{}}
+	var listing sync.WaitGroup
+	if list {
+		listing.Go(func() { inc.listed, _ = listIncludes(fsys) })
+	}
+	defer listing.Wait()
+	g, isGrep := fsys.(GrepFS)
 	var files, rust []string
-	if g, ok := fsys.(GrepFS); ok {
+	if isGrep {
 		var err error
-		if files, err = g.Grep([]string{`.c"`, `.S"`}, "*.c", "*.S"); err != nil {
-			return nil, err
-		}
 		if rust, err = g.Grep([]string{"mod "}, "*.rs"); err != nil {
 			return nil, err
 		}
@@ -264,7 +291,26 @@ func ScanIncludes(fsys fs.FS) (*Includes, error) {
 			return nil, err
 		}
 	}
-	inc := &Includes{Targets: map[string][]Include{}}
+	for _, p := range rust {
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range rustModules(string(data)) {
+			if target, ok := resolveModule(fsys, p, m); ok {
+				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: m.cond})
+			}
+		}
+	}
+	listing.Wait()
+	if isGrep {
+		var err error
+		if inc.listed != nil {
+			files = inc.listed.namingSources()
+		} else if files, err = g.Grep([]string{`.c"`, `.S"`}, "*.c", "*.S"); err != nil {
+			return nil, err
+		}
+	}
 	for _, p := range files {
 		data, err := fs.ReadFile(fsys, p)
 		if err != nil {
@@ -281,17 +327,6 @@ func ScanIncludes(fsys fs.FS) (*Includes, error) {
 				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: d.cond})
 			} else {
 				inc.Unresolved = append(inc.Unresolved, Include{From: p, Cond: d.cond, Name: d.name})
-			}
-		}
-	}
-	for _, p := range rust {
-		data, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range rustModules(string(data)) {
-			if target, ok := resolveModule(fsys, p, m); ok {
-				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: m.cond})
 			}
 		}
 	}

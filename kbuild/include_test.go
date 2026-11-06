@@ -249,6 +249,29 @@ func TestScanIncludesGrep(t *testing.T) {
 	}
 }
 
+// A scan with the listing of the tree finds the #include lines of its .c and
+// .S files there, in the forms a directive takes, without a grep of its own.
+func TestScanIncludesListed(t *testing.T) {
+	fsys := grepTree{FS: tree(map[string]string{
+		"a.c": "#include \"x.c\"\n", "b.S": "# include \"y.S\"\n", "c.h": "#include \"x.c\"\n",
+		"d.c": "#include <x.h>\n", "e.c": "#\tinclude \"x.c\"\n", "x.c": "", "y.S": "",
+	})}
+	inc, err := scanIncludes(fsys, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inc.listed == nil {
+		t.Error("the scan left no listing")
+	}
+	var from []string
+	for _, in := range inc.Targets["x.c"] {
+		from = append(from, in.From)
+	}
+	if !slices.Equal(from, []string{"a.c", "e.c"}) || len(inc.Targets) != 2 || len(inc.Targets["y.S"]) != 1 {
+		t.Errorf("Targets = %v, want x.c from a.c and e.c, y.S from b.S", inc.Targets)
+	}
+}
+
 // An #include in code compiled as 16-bit code on x86-64 takes the mixed
 // reading of the arch macros around it; one in kernel code the exact one.
 func TestIncludeArchMacros(t *testing.T) {
