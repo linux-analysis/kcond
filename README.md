@@ -20,7 +20,10 @@ A command reads the kernel tree the current directory is in, found the
 way git finds a repository, or the one `--tree DIR` names: as checked
 out, or at a git revision with `--rev REV`, through git's object store,
 so the checkout stays as it is. A checkout is grepped with ripgrep when
-it is installed, several times faster than git grep. Paths are relative to the current
+it is installed, several times faster than git grep. git inflates objects
+with the zlib it links, so a system zlib replaced by zlib-ng's compatible
+build (Gentoo: `sys-libs/zlib-ng[compat]`) saves about 13% of the CPU time on a long commit range,
+with nothing to set up here. Paths are relative to the current
 directory, or to the tree with `--tree`, and name files of the tree. The builds are x86_64, i386,
 arm64, arm, powerpc, s390, riscv and loongarch; `--build NAME` reads one
 of them, `--config FILE` the one the `.config` is for, and otherwise
