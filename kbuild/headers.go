@@ -248,7 +248,7 @@ func (r *Result) header(p string) (*kcond.Expr, Status) {
 	}
 	for level := map[string]bool{p: true}; len(level) > 0; {
 		headers := slices.Sorted(maps.Keys(level))
-		files, err := r.Includes.includers(r.lazy.fsys, headers)
+		lists, err := r.Includes.includers(r.lazy.fsys, headers)
 		if err != nil {
 			// shortcut: Lookup reports no error, so a read that fails
 			// leaves the header unknown; report it if that misleads.
@@ -256,17 +256,10 @@ func (r *Result) header(p string) (*kcond.Expr, Status) {
 			return nil, Unlisted
 		}
 		next = map[string]bool{}
-		bases := map[string]bool{}
-		for _, h := range headers {
-			bases[path.Base(h)] = true
-		}
-		for _, f := range slices.Sorted(maps.Keys(files)) {
-			for _, d := range files[f] {
-				if !bases[d.base] {
-					continue
-				}
-				for _, t := range r.targets(f, d, level) {
-					includer(t.file, f, t.cond)
+		for _, refs := range lists {
+			for _, ref := range refs {
+				for _, t := range r.targets(ref.file, ref.line, level) {
+					includer(t.file, ref.file, t.cond)
 				}
 			}
 		}
@@ -321,7 +314,7 @@ type target struct {
 }
 
 // targets returns the headers of level that directive d of file f names.
-func (r *Result) targets(f string, d incLine, level map[string]bool) []target {
+func (r *Result) targets(f string, d *incLine, level map[string]bool) []target {
 	if d.quoted {
 		if t, ok := resolveInclude(r.lazy.fsys, path.Dir(f), d.name); ok {
 			if level[t] {

@@ -50,6 +50,15 @@ type incListing struct {
 	// grepped the directive lines of each file not parsed yet.
 	read    map[string][]incLine
 	grepped map[string][]string
+	// named holds the lines of the files names lists that give each base
+	// name looked up, sorted by file.
+	named map[string][]incRef
+}
+
+// incRef is an #include line of a file.
+type incRef struct {
+	file string
+	line *incLine
 }
 
 // incLine is an #include line: the name it gives, with its base name,
@@ -109,11 +118,12 @@ func incLines(data []byte, p string) []incLine {
 	return ds
 }
 
-// includers returns, by file, the #include lines of the .c, .S and .h
-// files of fsys that name the base name of one of headers, for targets to
-// resolve; the lines of the tree are listed at the first call, and those
-// of a file parsed at the first call that returns it.
-func (inc *Includes) includers(fsys fs.FS, headers []string) (map[string][]incLine, error) {
+// includers returns the #include lines of the .c, .S and .h files of fsys
+// that name the base name of one of headers, for targets to resolve: a list
+// by base name, each sorted by file and not to be changed. The lines of the
+// tree are listed at the first call, and those of a file parsed at the first
+// call that returns it.
+func (inc *Includes) includers(fsys fs.FS, headers []string) ([][]incRef, error) {
 	inc.mu.Lock()
 	defer inc.mu.Unlock()
 	if inc.listed == nil {
@@ -123,20 +133,43 @@ func (inc *Includes) includers(fsys fs.FS, headers []string) (map[string][]incLi
 		}
 		inc.listed = l
 	}
-	out := map[string][]incLine{}
-	for _, h := range headers {
-		for _, f := range inc.listed.names[path.Base(h)] {
-			if _, ok := out[f]; ok {
-				continue
-			}
-			ls, err := inc.listed.lines(fsys, f)
-			if err != nil {
-				return nil, err
-			}
-			out[f] = ls
+	bases := make([]string, len(headers))
+	for i, h := range headers {
+		bases[i] = path.Base(h)
+	}
+	slices.Sort(bases)
+	bases = slices.Compact(bases)
+	out := make([][]incRef, len(bases))
+	for i, b := range bases {
+		refs, err := inc.listed.namedBy(fsys, b)
+		if err != nil {
+			return nil, err
 		}
+		out[i] = refs
 	}
 	return out, nil
+}
+
+// namedBy returns the lines that give base name b, parsing the files that may.
+func (l *incListing) namedBy(fsys fs.FS, b string) ([]incRef, error) {
+	if refs, ok := l.named[b]; ok {
+		return refs, nil
+	}
+	var refs []incRef
+	slices.Sort(l.names[b])
+	for _, f := range l.names[b] {
+		ls, err := l.lines(fsys, f)
+		if err != nil {
+			return nil, err
+		}
+		for i := range ls {
+			if ls[i].base == b {
+				refs = append(refs, incRef{f, &ls[i]})
+			}
+		}
+	}
+	l.named[b] = refs
+	return refs, nil
 }
 
 // listIncludes lists the #include lines of the .c, .S and .h files of
@@ -144,7 +177,7 @@ func (inc *Includes) includers(fsys fs.FS, headers []string) (map[string][]incLi
 // be parsed as each file is needed (see lines), and the files by the base
 // names their #include lines give; without, every file read and parsed.
 func listIncludes(fsys fs.FS) (*incListing, error) {
-	l := &incListing{names: map[string][]string{}, read: map[string][]incLine{}, grepped: map[string][]string{}}
+	l := &incListing{names: map[string][]string{}, read: map[string][]incLine{}, grepped: map[string][]string{}, named: map[string][]incRef{}}
 	name := func(f, n string) {
 		b := strings.Clone(path.Base(n)) // not a substring of the listing
 		if ns := l.names[b]; len(ns) == 0 || ns[len(ns)-1] != f {
