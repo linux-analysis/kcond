@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io/fs"
 	"maps"
+	"runtime"
 	"slices"
 	"sync"
 
@@ -93,7 +94,7 @@ func (r Result) Counted(build string) builds.FileCond {
 
 // Options tune a Resolve, a Diff or a Search.
 type Options struct {
-	Workers  int               // revisions crawled at once; 4 when 0
+	Workers  int               // revisions crawled at once; a quarter of the CPUs, 4 at least, when 0
 	Progress func(crawled int) // called after each revision crawled, with the count so far
 	// Build, one of kernel.ConfigBuilds, is the only build read, and the
 	// architectures are left out; every build is read when it is "".
@@ -109,8 +110,6 @@ type Options struct {
 	// goroutines at once, for different files.
 	Visit func(f *File, b builds.Build, fc builds.FileCond)
 }
-
-const defaultWorkers = 4
 
 // initial is what is known of a file before any revision is read.
 func initial(f *File) Result {
@@ -133,7 +132,8 @@ func initial(f *File) Result {
 func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Result, error) {
 	workers := opts.Workers
 	if workers <= 0 {
-		workers = defaultWorkers
+		// More crawl a long range faster, for more CPU time and memory.
+		workers = max(4, runtime.GOMAXPROCS(0)/4)
 	}
 	results := make([]Result, len(files))
 	next := make([]int, len(files))
