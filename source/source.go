@@ -58,13 +58,14 @@ func Analyze(src []byte, code Code) (*Source, error) {
 		s.GuardErr = err
 		return s, nil
 	}
-	// A line is reached when any of its tokens is.
-	perLine := map[int][]*kcond.Expr{}
-	for i, t := range toks {
-		perLine[t.line] = append(perLine[t.line], conds[i])
-	}
-	for l, cs := range perLine {
-		s.Guard[l] = kcond.Or(cs...)
+	// A line is reached when any of its tokens is; they are together.
+	for i := 0; i < len(toks); {
+		j := i + 1
+		for j < len(toks) && toks[j].line == toks[i].line {
+			j++
+		}
+		s.Guard[toks[i].line] = kcond.Or(conds[i:j]...)
+		i = j
 	}
 	return s, nil
 }
