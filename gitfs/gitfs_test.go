@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -244,6 +246,77 @@ func TestTreeGrep(t *testing.T) {
 	if got, err := tree.Grep([]string{"no such text"}, "*.S"); err == nil {
 		t.Errorf("Grep with a missing object = %q, nil; want an error", got)
 	}
+}
+
+// A Tree with a cache greps what the Tree before it left unread, and finds
+// what git grep does.
+func TestGrepCache(t *testing.T) {
+	f := newFixture(t)
+	strs, globs := []string{"#include", "# "}, []string{"*.c", "*.h"}
+	for i := range 100 {
+		write(t, filepath.Join(f.dir, "pad", strconv.Itoa(i)+".c"), "#include <a.h>\nint i;\n")
+	}
+	write(t, filepath.Join(f.dir, "changed.c"), "#include <old.h>\n")
+	write(t, filepath.Join(f.dir, "same.h"), "# define S\nint s;\n#include <s.h>\n")
+	git(t, f.dir, "add", ".")
+	git(t, f.dir, "commit", "-q", "-m", "First")
+	first := git(t, f.dir, "rev-parse", "HEAD")
+	write(t, filepath.Join(f.dir, "changed.c"), "int c;\r\n#include <new.h>\r\n# define C")
+	write(t, filepath.Join(f.dir, "early.c"), "#include <e.h>\n\x00\n")
+	write(t, filepath.Join(f.dir, "late.c"), "#include <l.h>\n"+strings.Repeat("x", 8000)+"\x00\n#include <m.h>\n")
+	write(t, filepath.Join(f.dir, "notes.txt"), "#include <t.h>\n")
+	if err := os.Symlink("#include <s.h>", filepath.Join(f.dir, "link.h")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.dir, "add", ".")
+	git(t, f.dir, "commit", "-q", "-m", "Second")
+	second := git(t, f.dir, "rev-parse", "HEAD")
+	want, err := grepLines(ctx, f.dir, second, strs, globs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want["link.h"] != nil || want["early.c"] != nil || len(want["late.c"]) != 2 || len(want["changed.c"]) != 2 {
+		t.Fatalf("git grep = %q; the test expects otherwise of it", want)
+	}
+
+	cache := &GrepCache{}
+	open := func(rev string) *Tree {
+		tree, err := Open(ctx, f.dir, rev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { tree.Close() })
+		tree.Cache = cache
+		return tree
+	}
+	a, b := open(first), open(second)
+	if _, err := a.GrepLines(strs, globs...); err != nil {
+		t.Fatal(err)
+	}
+	// Few blobs are new, so no git grep may run for them.
+	b.rev = "no-such-rev"
+	got, err := b.GrepLines(strs, globs...)
+	if err != nil || !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("GrepLines = %q, %v; want %q", got, err, want)
+	}
+	paths, err := b.Grep(strs, globs...)
+	if err != nil || !slices.Equal(paths, slices.Sorted(maps.Keys(want))) {
+		t.Errorf("Grep = %q, %v; want the files of %q", paths, err, want)
+	}
+	// A glob the cache cannot answer for is git grep's.
+	if _, err := b.Grep(strs, "pad/*"); err == nil {
+		t.Error("Grep of pad/* did not run git grep")
+	}
+	// Trees share the cache at once.
+	var wg sync.WaitGroup
+	for _, tree := range []*Tree{a, b, a, b} {
+		wg.Go(func() {
+			if _, err := tree.GrepLines([]string{"int"}, "*.c"); err != nil && tree == a {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestOpenBadRevision(t *testing.T) {

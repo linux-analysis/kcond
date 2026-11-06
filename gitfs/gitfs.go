@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -239,11 +240,15 @@ type Tree struct {
 	// tree's cat-file reader too.
 	ctx      context.Context
 	dir, rev string
+	// Cache, when not nil, answers Grep and GrepLines from what the other
+	// Trees sharing it found.
+	Cache *GrepCache
 }
 
 type blob struct {
 	oid  string
 	size int64
+	link bool // a symbolic link, which git grep does not read
 }
 
 // Open lists the tree of rev in the repository at dir.
@@ -266,7 +271,7 @@ func Open(ctx context.Context, dir, rev string) (*Tree, error) {
 		switch f[1] {
 		case "blob":
 			size, _ := strconv.ParseInt(f[3], 10, 64)
-			t.blobs[name] = blob{f[2], size}
+			t.blobs[name] = blob{f[2], size, f[0] == "120000"}
 			t.dirs[parent] = append(t.dirs[parent], dirEntry{name: path.Base(name), size: size})
 		case "tree":
 			if _, ok := t.dirs[name]; !ok {
@@ -292,13 +297,119 @@ func (t *Tree) Close() error { return t.cat.Close() }
 // one of strs. git grep reads the files in parallel, far faster than
 // reading each through ReadFile.
 func (t *Tree) Grep(strs []string, globs ...string) ([]string, error) {
-	return grep(t.ctx, t.dir, t.rev, false, strs, globs)
+	if !t.cached(globs) {
+		return grep(t.ctx, t.dir, t.rev, false, strs, globs)
+	}
+	lines, err := t.Cache.lines(t, strs, globs)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Sorted(maps.Keys(lines)), nil
 }
 
 // GrepLines returns, by file, the lines of the text files matching one of
-// globs that contain one of strs.
+// globs that contain one of strs. The lines may be shared: they are not to
+// be changed.
 func (t *Tree) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
-	return grepLines(t.ctx, t.dir, t.rev, strs, globs)
+	if !t.cached(globs) {
+		return grepLines(t.ctx, t.dir, t.rev, strs, globs)
+	}
+	return t.Cache.lines(t, strs, globs)
+}
+
+// cached tells whether the Cache answers for globs: only for *.ext, which is
+// a suffix of the path.
+func (t *Tree) cached(globs []string) bool {
+	return t.Cache != nil && !slices.ContainsFunc(globs, func(g string) bool {
+		return !strings.HasPrefix(g, "*.") || strings.ContainsAny(g[1:], `*?[\`)
+	})
+}
+
+// GrepCache keeps what the greps of the Trees sharing it found, by blob: the
+// revisions of a range share nearly all of theirs, so a Tree greps only the
+// blobs the Trees before it lacked. The zero value is ready; it is safe for
+// concurrent use.
+// shortcut: it only grows, to about 80 MB on v7.2..v7.3; bound it if a range
+// crawled over years of history runs short of memory.
+type GrepCache struct {
+	mu      sync.Mutex
+	queries map[string]map[string][]string // by strs and globs, then by blob
+}
+
+// lines is Tree.GrepLines through the cache. A tree with over a quarter of
+// its blobs unread, as the first always has, runs git grep; another reads
+// only those blobs here.
+func (c *GrepCache) lines(t *Tree, strs, globs []string) (map[string][]string, error) {
+	key := strings.Join(strs, "\x00") + "\x01" + strings.Join(globs, "\x00")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.queries == nil {
+		c.queries = map[string]map[string][]string{}
+	}
+	found := c.queries[key]
+	if found == nil {
+		found = map[string][]string{}
+		c.queries[key] = found
+	}
+	out := map[string][]string{}
+	var missed []string
+	matching := 0
+	for p, b := range t.blobs {
+		if b.link || !slices.ContainsFunc(globs, func(g string) bool { return strings.HasSuffix(p, g[1:]) }) {
+			continue
+		}
+		matching++
+		if ls, ok := found[b.oid]; !ok {
+			missed = append(missed, p)
+		} else if ls != nil {
+			out[p] = ls
+		}
+	}
+	if 4*len(missed) > matching {
+		lines, err := grepLines(t.ctx, t.dir, t.rev, strs, globs)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range missed {
+			ls := lines[p]
+			for i, l := range ls {
+				ls[i] = strings.Clone(l) // not the rest of git's record, with the path
+			}
+			found[strings.Clone(t.blobs[p].oid)] = ls
+		}
+	} else {
+		for _, p := range missed {
+			data, err := t.ReadFile(p)
+			if err != nil {
+				return nil, err
+			}
+			found[strings.Clone(t.blobs[p].oid)] = grepBlob(data, strs)
+		}
+	}
+	for _, p := range missed {
+		if ls := found[t.blobs[p].oid]; ls != nil {
+			out[p] = ls
+		}
+	}
+	return out, nil
+}
+
+// grepBlob returns the lines of data that contain one of strs, as git grep -I
+// -F does: none of a file with a NUL in its first 8000 bytes, binary to it.
+// shortcut: git grep also skips a file with a binary or -diff attribute and
+// this does not; the kernel sets neither on sources, so check the attributes
+// if a tree that does is ever read.
+func grepBlob(data []byte, strs []string) []string {
+	if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+		return nil
+	}
+	var out []string
+	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
+		if slices.ContainsFunc(strs, func(s string) bool { return bytes.Contains(line, []byte(s)) }) {
+			out = append(out, string(line))
+		}
+	}
+	return out
 }
 
 // GrepLines is Tree.GrepLines at rev for a caller without a Tree, which

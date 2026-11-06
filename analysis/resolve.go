@@ -109,6 +109,8 @@ type Options struct {
 	// it, while the build is at hand; it may be called from several
 	// goroutines at once, for different files.
 	Visit func(f *File, b builds.Build, fc builds.FileCond)
+
+	greps *gitfs.GrepCache // what the crawls of a Resolve share
 }
 
 // initial is what is known of a file before any revision is read.
@@ -155,6 +157,11 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 		}
 		pending = pending[:0]
 		revs := slices.Sorted(maps.Keys(byRev))
+		// A first revision crawled alone has nothing to share, and its lines
+		// would stay in memory to the end of the run.
+		if len(revs) > 1 && opts.greps == nil {
+			opts.greps = &gitfs.GrepCache{}
+		}
 		// Revisions are crawled in parallel; each owns its files. The
 		// first error ends the others.
 		found := make([][]Result, len(revs))
@@ -229,6 +236,7 @@ func Rev(ctx context.Context, dir, rev string, files []*File, opts Options) ([]R
 		return nil, err
 	}
 	defer tree.Close()
+	tree.Cache = opts.greps
 	results := make([]Result, len(files))
 	var found []int
 	for i, f := range files {
