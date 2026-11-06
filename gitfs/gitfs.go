@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -473,7 +474,11 @@ var rgPath, _ = exec.LookPath("rg")
 // when rev is "". With lines, it lists the matching lines instead, in no
 // order, each after its file and a NUL.
 func grep(ctx context.Context, dir, rev string, lines bool, strs, globs []string) ([]string, error) {
-	name, args, prefix := "git", []string{"grep", "-I"}, rev+":"
+	// git grep's default, a thread per CPU, spends far more CPU time for
+	// little wall time.
+	cpus := runtime.GOMAXPROCS(0)
+	threads := "--threads=" + strconv.Itoa(min(cpus, max(4, cpus/4)))
+	name, args, prefix := "git", []string{"grep", "-I", threads}, rev+":"
 	switch {
 	case rev == "" && rgPath != "":
 		// --hidden greps the dot directories git grep does; the user's
