@@ -708,6 +708,12 @@ func TestFiles(t *testing.T) {
 	if out, code := capture(t, "--tree", dir, "--json", "files", "include"); code != 0 || out != "[]\n" {
 		t.Errorf("files of a directory without sources = %q, %d", out, code)
 	}
+	// A header is no source: files says so and lists the rest.
+	var out, errs bytes.Buffer
+	if code := run([]string{"--tree", dir, "files", "include/linux/x.h", "lib"}, &out, &errs); code != 0 ||
+		out.String() != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\n" || errs.String() != "kcond: include/linux/x.h is a header: files lists sources\n" {
+		t.Errorf("files of a header = %q, %q, %d", out.String(), errs.String(), code)
+	}
 	// A source #included only under #if 0 is never compiled.
 	for name, content := range map[string]string{
 		"lib/Makefile": "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += dead.o\n",

@@ -829,6 +829,9 @@ func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
 		if _, err := fs.Stat(fsys, dirs[i]); err != nil {
 			return fmt.Errorf("%s: no such file or directory in the tree", dirs[i])
 		}
+		if f, _ := kernel.FileOf(dirs[i]); f.Header {
+			o.note(dirs[i] + " is a header: files lists sources")
+		}
 	}
 	under := func(p string) bool {
 		for _, d := range dirs {
