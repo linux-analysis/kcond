@@ -69,6 +69,7 @@ func TestMessages(t *testing.T) {
 		{[]string{"--tree", dir, "cond", "lib/a.c:5-"}, "kcond: usage: lib/a.c:5-: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "cond", "lib/a.c:1:5"}, "kcond: usage: lib/a.c:1:5: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
+		{[]string{"--tree", dir, "diff", "lib/a.c"}, "kcond: lib/a.c is not a commit\n"},
 	} {
 		if out, code := capture(t, c.args...); code != 2 || !strings.HasSuffix(out, c.want) {
 			t.Errorf("%v = %q, %d; want %q", c.args, out, code, c.want)
@@ -218,6 +219,20 @@ func TestJSONEmptyLists(t *testing.T) {
 		if out, code := capture(t, append([]string{"--tree", dir, "--json"}, args...)...); code != 0 || strings.Contains(out, "null") {
 			t.Errorf("%v = %q, %d; want no null", args, out, code)
 		}
+	}
+}
+
+// A commit is named by its full hash, whatever the argument calls it.
+func TestFullHash(t *testing.T) {
+	dir, fix := newKernel(t)
+	if out, code := capture(t, "--tree", dir, "diff", "HEAD"); code != 0 || !strings.HasPrefix(out, fix+"\t") {
+		t.Errorf("diff HEAD = %q, %d; want %s first", out, code, fix)
+	}
+	if out, code := capture(t, "--tree", dir, "search", "HEAD", "--where", "CONFIG_A"); code != 0 || !strings.HasPrefix(out, fix+"\t") {
+		t.Errorf("search HEAD = %q, %d; want %s first", out, code, fix)
+	}
+	if out, code := capture(t, "--tree", dir, "--json", "diff", "HEAD"); code != 0 || !strings.Contains(out, `"rev": "`+fix+`"`) {
+		t.Errorf("diff --json HEAD = %q, %d; want rev %s", out, code, fix)
 	}
 }
 
@@ -635,7 +650,7 @@ func TestDiffRange(t *testing.T) {
 	// A.. and A...B read the Makefiles at the end too: HEAD.
 	whole, _ := capture(t, "--tree", dir, "--json", "diff", base+"..HEAD")
 	for _, r := range []string{base + "..", base + "...HEAD"} {
-		if out, code := capture(t, "--tree", dir, "--json", "diff", r); code != 0 || out != whole || !strings.Contains(out, `"rev": "HEAD"`) {
+		if out, code := capture(t, "--tree", dir, "--json", "diff", r); code != 0 || out != whole || !strings.Contains(out, `"rev": "`+merge+`"`) {
 			t.Errorf("diff %s = %q, %d; want %q", r, out, code, whole)
 		}
 	}

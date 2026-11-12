@@ -95,6 +95,23 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+func TestCommit(t *testing.T) {
+	f := newFixture(t)
+	for _, rev := range []string{"HEAD", f.c2[:7], "HEAD~0"} {
+		if got, err := Commit(ctx, f.dir, rev); err != nil || got != f.c2 {
+			t.Errorf("Commit(%s) = %q, %v; want %s", rev, got, err, f.c2)
+		}
+	}
+	for _, rev := range []string{"a.c", "nonesuch"} {
+		if _, err := Commit(ctx, f.dir, rev); err == nil || err.Error() != rev+" is not a commit" {
+			t.Errorf("Commit(%s) = %v; want not a commit", rev, err)
+		}
+	}
+	if _, err := Commit(ctx, f.dir, "--all"); err == nil {
+		t.Error("Commit(--all) succeeded")
+	}
+}
+
 func TestDiffUserConfig(t *testing.T) {
 	f := newFixture(t)
 	// The user's color and prefix settings change nothing.

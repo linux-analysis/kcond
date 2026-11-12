@@ -153,9 +153,9 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 		if firstErr != nil {
 			return
 		}
-		alone := c.Revs[0] == c.Hash
-		if !alone && at != c.Revs[0] {
-			if firstErr = openAt(c.Revs[0]); firstErr != nil {
+		alone := c.End == ""
+		if !alone && at != c.End {
+			if firstErr = openAt(c.End); firstErr != nil {
 				return
 			}
 		}

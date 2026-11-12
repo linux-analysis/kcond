@@ -105,6 +105,23 @@ func Diff(ctx context.Context, dir, hash string) (string, error) {
 	return string(out), nil
 }
 
+// Commit returns the full id of the commit rev names; a short id is read
+// among commits only.
+func Commit(ctx context.Context, dir, rev string) (string, error) {
+	if err := checkRev(rev); err != nil {
+		return "", err
+	}
+	out, err := run(ctx, dir, "git", "rev-parse", "--verify", rev+"^{commit}")
+	var gerr *Error
+	if errors.As(err, &gerr) && gerr.Stderr == "fatal: Needed a single revision" {
+		return "", fmt.Errorf("%s is not a commit", rev) // git does not say which
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Diffs passes f the changes of each of hashes, full commit ids as RevList
 // gives them, in order, read as Diff reads them but for a merge, whose
 // changes are its own: the hunks that differ from every parent (git's
