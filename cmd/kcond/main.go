@@ -125,7 +125,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	o := opts{stderr: stderr}
 	fs := flag.NewFlagSet("kcond", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // run prints a flag error
 	fs.StringVar(&o.tree, "tree", "", "the kernel tree (default: the one the current directory is in)")
 	fs.StringVar(&o.rev, "rev", "", "read the tree at this git revision instead of as checked out")
 	fs.StringVar(&o.build, "build", "", "one build only: "+strings.Join(kernel.ConfigBuilds, ", "))
@@ -138,7 +138,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.arch, "arch", "", "search: this architecture may build a changed file")
 	fs.StringVar(&o.label, "label", "", "search: the change has this arch label")
 	fs.BoolVar(&o.strict, "strict", false, "search: every changed line passes --config, --where, --always and --arch, not some")
-	fs.Usage = func() {} // a flag error points to -h below
 	printUsage := func(w io.Writer) {
 		fmt.Fprint(w, usage)
 		fs.SetOutput(w)
@@ -157,7 +156,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return 0
 	case err != nil:
-		fmt.Fprintln(stderr, "run kcond -h for usage")
+		fmt.Fprintf(stderr, "kcond: %v\nrun kcond -h for usage\n", err)
 		return 2
 	}
 	if o.version {
@@ -215,7 +214,7 @@ func message(err error) string {
 	var gerr *gitfs.Error
 	if errors.As(err, &gerr) && gerr.Stderr != "" {
 		line, _, _ := strings.Cut(gerr.Stderr, "\n")
-		return strings.TrimPrefix(line, "fatal: ")
+		return strings.TrimPrefix(strings.TrimPrefix(line, "fatal: "), "error: ")
 	}
 	return strings.TrimPrefix(err.Error(), "kcond: ")
 }

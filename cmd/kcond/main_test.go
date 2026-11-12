@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/linux-analysis/kcond/analysis"
+	"github.com/linux-analysis/kcond/gitfs"
 )
 
 // capture runs the command and returns its output and exit code.
@@ -64,16 +65,20 @@ func TestMessages(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"-x"}, "flag provided but not defined: -x\nrun kcond -h for usage\n"},
+		{[]string{"-x"}, "kcond: flag provided but not defined: -x\nrun kcond -h for usage\n"},
 		{[]string{"--tree", dir, "search", "HEAD", "--where", "A &&"}, "kcond: parse \"CONFIG_A &&\" at 11: expected an operand\n"},
 		{[]string{"--tree", dir, "cond", "lib/a.c:5-"}, "kcond: usage: lib/a.c:5-: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "cond", "lib/a.c:1:5"}, "kcond: usage: lib/a.c:1:5: lines are LINE or LINE-LINE, from 1\n"},
 		{[]string{"--tree", dir, "--rev", "nonesuch", "cond", "lib/a.c"}, "kcond: Not a valid object name nonesuch\n"},
 		{[]string{"--tree", dir, "diff", "lib/a.c"}, "kcond: lib/a.c is not a commit\n"},
 	} {
-		if out, code := capture(t, c.args...); code != 2 || !strings.HasSuffix(out, c.want) {
+		if out, code := capture(t, c.args...); code != 2 || out != c.want {
 			t.Errorf("%v = %q, %d; want %q", c.args, out, code, c.want)
 		}
+	}
+	// git's error: is dropped as its fatal: is, and its hints with it.
+	if got := message(&gitfs.Error{Stderr: "error: short object ID 1866 is ambiguous\nhint: The candidates are:"}); got != "short object ID 1866 is ambiguous" {
+		t.Errorf("message = %q", got)
 	}
 }
 
