@@ -660,7 +660,7 @@ func (v *Values) Requires(name string) []string {
 		}
 		v.requires[name] = out
 	}
-	return slices.Clone(out) // the caller may change it
+	return append([]string{}, out...) // the caller may change it; [] in JSON, not null
 }
 
 // DependsOn returns the bool and tristate symbols, as CONFIG_ names, that

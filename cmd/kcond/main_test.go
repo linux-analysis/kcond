@@ -204,6 +204,23 @@ func TestSymbolsUnknown(t *testing.T) {
 	}
 }
 
+// JSON writes an empty list as [], never null: a commit without kernel
+// files, a file no build always compiles, a symbol without requirements
+// and one the Kconfig lacks.
+func TestJSONEmptyLists(t *testing.T) {
+	dir, _ := newKernel(t)
+	docs := commitFile(t, dir, "Documentation/a.rst", "A\n")
+	for _, args := range [][]string{
+		{"diff", docs},
+		{"--rev", "HEAD", "arches", "lib/c.c"},
+		{"--build", "x86_64", "symbols", "A", "NOPE"},
+	} {
+		if out, code := capture(t, append([]string{"--tree", dir, "--json"}, args...)...); code != 0 || strings.Contains(out, "null") {
+			t.Errorf("%v = %q, %d; want no null", args, out, code)
+		}
+	}
+}
+
 // diff leaves out a file whose changed lines are all comments, so that
 // it does not make the condition unknown in part.
 func TestDiffSkipsCommentOnlyFiles(t *testing.T) {

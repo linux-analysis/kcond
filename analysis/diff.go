@@ -96,7 +96,7 @@ func Diff(ctx context.Context, dir string, args []string, o Options) ([]CommitRe
 	}
 	results := make([]CommitResult, 0, len(commits))
 	for i, c := range commits {
-		r := CommitResult{Commit: c.Hash}
+		r := CommitResult{Commit: c.Hash, Files: []FileResult{}}
 		var terms []*kcond.Expr
 		var fas []builds.FileArches
 		for j, ch := range changes[i] {

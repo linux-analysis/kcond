@@ -513,7 +513,7 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 			return err
 		}
 	}
-	var rows []fileCond
+	rows := []fileCond{}
 	paths := make([]string, len(queries))
 	for i, q := range queries {
 		paths[i] = q.path
@@ -636,7 +636,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 	fas := make([]builds.FileArches, len(paths))
 	for i, p := range paths {
 		f, _ := kernel.FileOf(p)
-		fas[i] = builds.FileArches{File: f}
+		fas[i] = builds.FileArches{File: f, Always: []string{}}
 	}
 	err = builds.NewSession(fsys, paths).Builds(func(b builds.Build) error {
 		warn(o, b)
@@ -748,7 +748,7 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 		return err
 	}
 	defer close()
-	var rows []symbolInfo
+	rows := []symbolInfo{}
 	err = each(fsys, o, nil, func(b builds.Build) error {
 		if b.Values == nil {
 			return fmt.Errorf("the %s Kconfig could not be read", b.Name)
