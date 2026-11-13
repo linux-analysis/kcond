@@ -102,13 +102,14 @@ func TestParse(t *testing.T) {
 }
 
 func TestOptions(t *testing.T) {
-	cfg, err := options(strings.NewReader(`#
+	cfg, unset, err := options(strings.NewReader(`#
 # Automatically generated file; DO NOT EDIT.
 CONFIG_A=y
 CONFIG_B=m
 # CONFIG_C is not set
 CONFIG_D="string"
 CONFIG_E=0x10
+CONFIG_F=n
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -120,5 +121,8 @@ CONFIG_E=0x10
 	}
 	if _, ok := cfg["CONFIG_C"]; ok {
 		t.Error("CONFIG_C is not set but present")
+	}
+	if len(unset) != 2 || !unset["CONFIG_C"] || !unset["CONFIG_F"] {
+		t.Errorf("unset = %v, want CONFIG_C and CONFIG_F", unset)
 	}
 }

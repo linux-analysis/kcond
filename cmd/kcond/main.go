@@ -91,7 +91,10 @@ filters, for search:
                  changed line, not some
 
 a .config:
-  eval EXPR...                whether conditions hold for the --config file
+  eval EXPR...                whether conditions hold for the --config file;
+                              CONFIG_ is optional on the options the tree's
+                              Kconfig declares or, outside a tree, the
+                              .config lists, other bare names are macros
   config FILE                 what a .config says: build, version, options
 
 exit status: 0; 1 with -q when something does not apply, a range has no
@@ -676,9 +679,13 @@ func readConfig(path string) (dotconfig.File, error) {
 	return dotconfig.Read(data)
 }
 
-func eval(_ context.Context, o opts, exprs []string, out io.Writer) error {
+func eval(ctx context.Context, o opts, exprs []string, out io.Writer) error {
 	if o.cfg == nil || len(exprs) == 0 {
 		return fmt.Errorf("%w: eval takes --config FILE and conditions", errUsage)
+	}
+	exprs, err := prefixOptions(ctx, o, exprs)
+	if err != nil {
+		return err
 	}
 	type result struct {
 		Condition string `json:"condition"`
@@ -872,7 +879,61 @@ func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
 	})
 }
 
-var identRe = regexp.MustCompile(`=?[A-Za-z0-9_]+`)
+// wordRe matches a quoted atom, =y or =m, or a word of a condition.
+var wordRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|=?[A-Za-z0-9_]+`)
+
+// prefix adds CONFIG_ to the bare words of condition s that option takes:
+// not a quoted atom, =y, =m, true, false or a CONFIG_ name.
+func prefix(s string, option func(word string) bool) string {
+	return wordRe.ReplaceAllStringFunc(s, func(w string) string {
+		if w[0] == '"' || w[0] == '=' || w == "true" || w == "false" || strings.HasPrefix(w, "CONFIG_") || !option(w) {
+			return w
+		}
+		return "CONFIG_" + w
+	})
+}
+
+// prefixOptions adds CONFIG_ to the bare words of eval's conditions that
+// are options: those a Kconfig file of the tree declares, for any
+// architecture (see builds.Defined), or outside a tree those the .config
+// sets or says are not set. Any other is a macro, which no .config
+// decides; o.note hears so.
+func prefixOptions(ctx context.Context, o opts, exprs []string) ([]string, error) {
+	bare := false // prefix asks option of bare words only
+	for _, s := range exprs {
+		prefix(s, func(string) bool { bare = true; return false })
+	}
+	if !bare {
+		return exprs, nil
+	}
+	option := func(w string) bool { return o.cfg.Config["CONFIG_"+w] != 0 || o.cfg.Unset["CONFIG_"+w] }
+	lacks := "the .config does not list"
+	if _, _, err := treeDir(o); err == nil {
+		fsys, close, err := open(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		defer close()
+		defined, err := builds.Defined(fsys)
+		if err != nil {
+			return nil, err
+		}
+		option, lacks = func(w string) bool { return defined["CONFIG_"+w] }, "no Kconfig file declares"
+	}
+	noted := map[string]bool{}
+	out := make([]string, len(exprs))
+	for i, s := range exprs {
+		out[i] = prefix(s, func(w string) bool {
+			ok := option(w)
+			if !ok && !noted[w] {
+				noted[w] = true
+				o.note(fmt.Sprintf("%s is read as a macro: %s CONFIG_%s", w, lacks, w))
+			}
+			return ok
+		})
+	}
+	return out, nil
+}
 
 // parseCond reads a --where condition: CONFIG_ options, the prefix
 // optional, under !, && and ||, with =y and =m.
@@ -880,13 +941,7 @@ func parseCond(s string) (*kcond.Expr, error) {
 	if strings.Contains(s, `"`) {
 		return nil, fmt.Errorf("%w: --where takes CONFIG_ options, not %s", errUsage, s)
 	}
-	s = identRe.ReplaceAllStringFunc(s, func(id string) string {
-		if strings.HasPrefix(id, "=") || id == "true" || id == "false" || strings.HasPrefix(id, "CONFIG_") {
-			return id
-		}
-		return "CONFIG_" + id
-	})
-	return kcond.Parse(s)
+	return kcond.Parse(prefix(s, func(string) bool { return true }))
 }
 
 // search prints the commits whose change passes the filters the flags

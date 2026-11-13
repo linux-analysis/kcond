@@ -52,6 +52,30 @@ func TestEvalAndConfig(t *testing.T) {
 	}
 }
 
+// A bare name is an option the tree's Kconfig declares, for any
+// architecture, or outside a tree one the .config lists; any other is a
+// macro, and eval says so. A quoted name is a macro.
+func TestEvalBareNames(t *testing.T) {
+	dir, _ := newKernel(t)
+	cfg := filepath.Join(t.TempDir(), ".config")
+	if err := os.WriteFile(cfg, []byte("# Linux/x86 6.12.43 Kernel Configuration\nCONFIG_A=y\n# CONFIG_B is not set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--config", cfg, "eval", "A && !B", "ARM64", `"A"`},
+			"kcond: ARM64 is read as a macro: the .config does not list CONFIG_ARM64\nCONFIG_A && !CONFIG_B\tapplies\nARM64\tunknown\nA\tunknown\n"},
+		{[]string{"--tree", dir, "--config", cfg, "eval", "A && !B", "ARM64", "FOO", "FOO"},
+			"kcond: FOO is read as a macro: no Kconfig file declares CONFIG_FOO\nCONFIG_A && !CONFIG_B\tapplies\nCONFIG_ARM64\tnot applicable\nFOO\tunknown\nFOO\tunknown\n"},
+	} {
+		if out, code := capture(t, c.args...); code != 0 || out != c.want {
+			t.Errorf("%v = %q, %d; want %q", c.args, out, code, c.want)
+		}
+	}
+}
+
 func TestMessages(t *testing.T) {
 	dir, _ := newKernel(t)
 	var out, errs bytes.Buffer

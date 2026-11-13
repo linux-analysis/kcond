@@ -20,6 +20,8 @@ import (
 // File is a kernel .config as Read reads it.
 type File struct {
 	Config kcond.Config
+	// Unset are the options the file says are not set.
+	Unset map[string]bool
 	// Version is the kernel version the header names, as written:
 	// 6.12.43+deb13, 6.18.0-rc3, 6.12. It is "" without a header.
 	Version string
@@ -103,14 +105,14 @@ func Parse(data []byte) (File, error) {
 	if bytes.IndexByte(data, 0) >= 0 {
 		return File{}, errors.New("the file holds binary data: not a kernel .config")
 	}
-	cfg, err := options(bytes.NewReader(data))
+	cfg, unset, err := options(bytes.NewReader(data))
 	if err != nil {
 		return File{}, err
 	}
 	if len(cfg) == 0 {
 		return File{}, errors.New("no CONFIG_ options: not a kernel .config")
 	}
-	f := File{Config: cfg}
+	f := File{Config: cfg, Unset: unset}
 	if m := headerRe.FindSubmatch(data); m != nil {
 		// kconfig ends the file with a newline.
 		if !bytes.HasSuffix(data, []byte("\n")) {
@@ -141,22 +143,30 @@ func Parse(data []byte) (File, error) {
 	return f, nil
 }
 
-// options reads the options of a .config. Non-tristate symbols with a
-// value count as 'y'.
-func options(r io.Reader) (kcond.Config, error) {
-	cfg := kcond.Config{}
+// options reads the options of a .config, and those it says are not
+// set. Non-tristate symbols with a value count as 'y'.
+func options(r io.Reader) (cfg kcond.Config, unset map[string]bool, err error) {
+	cfg, unset = kcond.Config{}, map[string]bool{}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		name, val, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
-		if !ok || !kcond.IsSymbol(name) || val == "n" {
+		line := strings.TrimSpace(sc.Text())
+		if c, ok := strings.CutPrefix(line, "# "); ok {
+			if name, ok := strings.CutSuffix(c, " is not set"); ok && kcond.IsSymbol(name) {
+				unset[name] = true
+			}
 			continue
 		}
-		if val == "m" {
+		name, val, ok := strings.Cut(line, "=")
+		switch {
+		case !ok || !kcond.IsSymbol(name):
+		case val == "n":
+			unset[name] = true
+		case val == "m":
 			cfg[name] = 'm'
-		} else {
+		default:
 			cfg[name] = 'y'
 		}
 	}
-	return cfg, sc.Err()
+	return cfg, unset, sc.Err()
 }
