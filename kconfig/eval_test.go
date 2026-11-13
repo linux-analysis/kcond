@@ -636,6 +636,28 @@ config TWICE
 	bool
 	depends on NET
 	select INET
+
+config ROBUST
+	def_bool NET && PCI
+
+config HRTICK
+	bool
+	default n if EXPERT
+	default y if INET
+
+config ORDEF
+	def_bool NET || PCI
+
+config PICKED
+	def_bool PCI
+
+config PICKER
+	bool "picker"
+	select PICKED
+
+config ASKED
+	bool "asked" if EXPERT
+	default PCI
 `}, nil)
 	for name, want := range map[string]string{
 		"MPTCP":        "CONFIG_INET CONFIG_NET",
@@ -651,6 +673,13 @@ config TWICE
 		"NET":       "",
 		"UNDEFINED": "",
 		"LOOP_A":    "CONFIG_LOOP_B",
+		// A symbol only its defaults set needs what every default that
+		// can enable it ANDs, unless a prompt or a select can set it too.
+		"ROBUST": "CONFIG_NET CONFIG_PCI",
+		"HRTICK": "CONFIG_INET CONFIG_NET",
+		"ORDEF":  "",
+		"PICKED": "",
+		"ASKED":  "",
 	} {
 		if got := strings.Join(v.Requires(name), " "); got != want {
 			t.Errorf("Requires(%s) = %q, want %q", name, got, want)
@@ -664,7 +693,13 @@ config TWICE
 		t.Errorf("Requires(MPTCP) after a change of an earlier result = %q", got)
 	}
 	// DependsOn stops at the direct dependencies.
-	for name, want := range map[string]string{"MPTCP": "CONFIG_INET", "INET": "CONFIG_NET", "NET": ""} {
+	for name, want := range map[string]string{
+		"MPTCP":  "CONFIG_INET",
+		"INET":   "CONFIG_NET",
+		"NET":    "",
+		"ROBUST": "CONFIG_NET CONFIG_PCI",
+		"HRTICK": "CONFIG_INET",
+	} {
 		if got := strings.Join(v.DependsOn(name), " "); got != want {
 			t.Errorf("DependsOn(%s) = %q, want %q", name, got, want)
 		}

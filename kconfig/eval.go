@@ -646,8 +646,10 @@ func (v *Values) Defined(name string) bool {
 // their own dependencies. Only plain symbols ANDed in a dependency count,
 // including those the tree never defines, which keep it n.
 // A select that ignores unmet dependencies is a Kconfig warning and does
-// not count either. Each symbol's are computed once; Requires is safe for
-// concurrent use.
+// not count either. A symbol no prompt, select or imply sets takes its
+// value from its defaults, so it also requires those ANDed in every
+// default that can enable it. Each symbol's are computed once; Requires
+// is safe for concurrent use.
 func (v *Values) Requires(name string) []string {
 	name = strings.TrimPrefix(name, "CONFIG_")
 	v.requiresMu.Lock()
@@ -665,7 +667,8 @@ func (v *Values) Requires(name string) []string {
 
 // DependsOn returns the bool and tristate symbols, as CONFIG_ names, that
 // every definition of the symbol name (with or without CONFIG_) depends on
-// directly: Requires without the dependencies of those.
+// directly, or every default ANDs for a symbol only its defaults set:
+// Requires without the dependencies of those.
 func (v *Values) DependsOn(name string) []string {
 	s := v.t.Syms[strings.TrimPrefix(name, "CONFIG_")]
 	if s == nil || s.Choice != nil {
@@ -696,13 +699,26 @@ func (v *Values) requiresOf(name string, memo map[string]map[string]bool) map[st
 }
 
 // everyDefinition returns the symbols every definition of s gives: each
-// one ANDed at the top of the definition's dependencies, with what expand,
-// when not nil, adds for it; s itself is left out.
+// one ANDed at the top of the definition's dependencies, or of every
+// default that can enable a symbol only its defaults set (see Requires),
+// with what expand, when not nil, adds for it; s itself is left out.
 func (v *Values) everyDefinition(s *Symbol, expand func(d string, cur map[string]bool)) map[string]bool {
+	es := s.DirDep
+	if len(s.Prompts) == 0 && len(s.RevDep) == 0 && len(s.Implied) == 0 && !s.Transitional {
+		var on []*Expr
+		for _, df := range s.Defaults {
+			if df.Value.Op != OpSym || df.Value.Name != "n" {
+				on = append(on, and(df.Value, df.Cond))
+			}
+		}
+		if len(on) > 0 {
+			es = on // a default's condition holds its definition's dependencies
+		}
+	}
 	var out map[string]bool
-	for i, dep := range s.DirDep {
+	for i, e := range es {
 		cur := map[string]bool{}
-		for _, d := range v.conjuncts(dep) {
+		for _, d := range v.conjuncts(e) {
 			cur[d] = true
 			if expand != nil {
 				expand(d, cur)
