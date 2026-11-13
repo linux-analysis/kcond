@@ -690,6 +690,12 @@ func TestQuiet(t *testing.T) {
 			t.Errorf("%v = %q, %d; want exit %d", c.args, out, code, c.code)
 		}
 	}
+	// An empty range has nothing that applies, as search finds nothing.
+	for _, cmd := range []string{"diff", "search"} {
+		if out, code := capture(t, "--tree", dir, "--config", cfg, "-q", cmd, "HEAD..HEAD"); code != 1 || out != "kcond: HEAD..HEAD has no commits\n" {
+			t.Errorf("-q %s HEAD..HEAD = %q, %d; want exit 1", cmd, out, code)
+		}
+	}
 }
 
 func TestFiles(t *testing.T) {

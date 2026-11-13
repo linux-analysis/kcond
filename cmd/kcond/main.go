@@ -94,8 +94,8 @@ a .config:
   eval EXPR...                whether conditions hold for the --config file
   config FILE                 what a .config says: build, version, options
 
-exit status: 0; 1 with -q when something does not apply or a search finds
-nothing; 2 on an error.
+exit status: 0; 1 with -q when something does not apply, a range has no
+commits or a search finds nothing; 2 on an error.
 
 flags:
 `
@@ -226,8 +226,11 @@ var errUsage = errors.New("usage")
 var errNo = errors.New("does not apply")
 
 // quiet is the result of -q: errNo unless every one of the n verdicts is
-// applies.
+// applies, and when there is none: nothing applies.
 func quiet(n int, verdict func(i int) string) error {
+	if n == 0 {
+		return errNo
+	}
 	for i := range n {
 		if verdict(i) != change.Applies {
 			return errNo
