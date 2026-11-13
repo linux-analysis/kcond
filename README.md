@@ -155,8 +155,12 @@ afterwards. The 3,266 commits of v7.3-rc1..v7.3-rc7 take 10 seconds with
 for the commits the other filters keep.
 
 `arches` lists the architectures that may build a file, those where its
-condition is unknown and those that always build it, and labels the set
-`generic`, `several`, one architecture, `other` or `none`:
+condition is unknown and those that always build it, and labels the
+set: `generic` when every architecture the tree has may build it, s390
+aside, as it has no wireless, Bluetooth or sound; the architecture's
+name when only one may; `several` otherwise; `other` when the files are
+all under `arch/` of an architecture kcond does not build; `none` when
+none may build it. An unknown condition counts as may:
 
     $ kcond arches drivers/net/bonding/bond_main.c arch/arm64/kernel/smccc-call.S --rev v6.12
     drivers/net/bonding/bond_main.c	arches x86,arm64,arm,powerpc,s390,riscv,loongarch	unknown 	always 
