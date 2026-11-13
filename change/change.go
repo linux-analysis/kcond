@@ -130,6 +130,13 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 		}
 		return texts
 	}
+	// run counts the numbers at the head of nums that follow on from start.
+	run := func(nums []int, start int) (k int) {
+		for k < len(nums) && nums[k] == start+k {
+			k++
+		}
+		return k
+	}
 	for _, h := range fd.Hunks {
 		// A hunk whose code reads the same before and after only moves
 		// comments or blank lines.
@@ -137,8 +144,22 @@ func Change(b Blobs, hash string, fd unidiff.FileDiff) (fc FileChange, ok bool) 
 		if slices.Equal(code(oldSrc, h.OldStart, h.OldLines), code(newSrc, h.NewStart, h.NewLines)) {
 			continue
 		}
-		lines(oldSrc, h.Deleted)
-		lines(newSrc, h.Added)
+		// So does a run of changed lines between context lines whose code
+		// reads the same, as an #endif given a comment, which would count
+		// with the #else branch it closes.
+		del, add, o, n := h.Deleted, h.Added, h.OldStart, h.NewStart
+		for len(del) > 0 || len(add) > 0 {
+			d, a := run(del, o), run(add, n)
+			if d == 0 && a == 0 {
+				o, n = o+1, n+1 // a context line
+				continue
+			}
+			if !slices.Equal(code(oldSrc, o, d), code(newSrc, n, a)) {
+				lines(oldSrc, del[:d])
+				lines(newSrc, add[:a])
+			}
+			del, add, o, n = del[d:], add[a:], o+d, n+a
+		}
 	}
 	fc.Code = len(terms) > 0
 	fc.Region = kcond.Or(terms...)

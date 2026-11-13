@@ -145,6 +145,22 @@ func TestChangesMerge(t *testing.T) {
 	}
 }
 
+// An #endif given a comment changes no code, though its hunk does: the
+// #if lines decide, not the #endif, which closes the #else branch and
+// would make the change read true.
+func TestChangesCommentRun(t *testing.T) {
+	b := blobs{
+		"h^:e.c": "#if defined(CONFIG_A)\nint a;\n#else\nint b;\n#endif\n",
+		"h:e.c":  "#ifdef CONFIG_C\nint a;\n#else\nint b;\n#endif /* !CONFIG_C */\n",
+	}
+	d := "diff --git a/e.c b/e.c\n--- a/e.c\n+++ b/e.c\n@@ -1,5 +1,5 @@\n" +
+		"-#if defined(CONFIG_A)\n+#ifdef CONFIG_C\n int a;\n #else\n int b;\n-#endif\n+#endif /* !CONFIG_C */\n"
+	got := Changes(b, "h", d)
+	if len(got) != 1 || !got[0].Code || got[0].Region.String() != "CONFIG_A=y || CONFIG_C=y" {
+		t.Errorf("Changes = %+v, want e.c in CONFIG_A=y || CONFIG_C=y", got)
+	}
+}
+
 // Arch macros follow the Kconfig symbols in a source only the kernel
 // compiles; in a header, which the 32-bit vDSO of an x86-64 kernel also
 // includes, the line may be compiled as i386 code there.
