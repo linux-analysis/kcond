@@ -744,11 +744,15 @@ func TestFiles(t *testing.T) {
 		out.String() != "lib/a.c\tCONFIG_A\nlib/b.c\tCONFIG_B\n" || errs.String() != "kcond: include/linux/x.h is a header: files lists sources\n" {
 		t.Errorf("files of a header = %q, %q, %d", out.String(), errs.String(), code)
 	}
-	// A source #included only under #if 0 is never compiled.
+	// A source #included only under #if 0 is never compiled, nor one under
+	// an option the Kconfig never allows, COMPILE_TEST being off.
 	for name, content := range map[string]string{
-		"lib/Makefile": "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += dead.o\n",
+		"lib/Makefile": "obj-$(CONFIG_A) += a.o\nobj-$(CONFIG_B) += b.o\nobj-y += dead.o\nobj-$(CONFIG_D) += d.o\n",
 		"lib/dead.c":   "#if 0\n#include \"never.c\"\n#endif\n",
 		"lib/never.c":  "int never;\n",
+		"lib/d.c":      "int d;\n",
+		"arch/x86/Kconfig": "config X86\n\tdef_bool y\n\nconfig MODULES\n\tbool \"m\"\n\nconfig A\n\tbool \"a\"\n\nconfig B\n\ttristate \"b\"\n\tdepends on A\n\n" +
+			"config COMPILE_TEST\n\tbool \"compile test\"\n\nconfig D\n\tbool \"d\"\n\tdepends on COMPILE_TEST\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)

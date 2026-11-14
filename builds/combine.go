@@ -16,7 +16,7 @@ type Status uint8
 const (
 	StatusBuilt    Status = iota + 1 // listed by a Makefile or #included by a listed source; Kbuild holds
 	StatusUnlisted                   // neither listed by a Makefile the crawl follows nor #included by a listed source
-	StatusNotBuilt                   // another arch, the other word size, or a directory never entered outside arch/
+	StatusNotBuilt                   // another arch, the other word size, a directory never entered outside arch/, or a condition the Kconfig never lets hold
 	StatusHeader                     // a header no listed file includes
 	StatusMissing                    // not found at any revision tried
 )

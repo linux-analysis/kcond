@@ -42,7 +42,10 @@ the lines and their AND; with `--config`, whether that holds for the
     net/ipv4/tcp_ipv4.c	x86_64	built	CONFIG_INET && CONFIG_NET	true	CONFIG_INET && CONFIG_NET	applies
 
 A file is `built` under its condition, `unlisted` when no Makefile names
-it, and `not built` when it belongs to another architecture. A header is
+it, and `not built` when it belongs to another architecture or the
+build's Kconfig never lets its condition hold, as for
+`drivers/block/floppy.c` on arm64, which needs `ARCH_MAY_HAVE_PC_FDC`;
+`COMPILE_TEST` counts as off, as production kernels never set it. A header is
 `built` where the files that include it are, directly or through other
 headers, each under the condition of its `#include` line: a quoted name
 next to the including file, `<name>` through the build's include

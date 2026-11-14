@@ -158,7 +158,8 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 
 func TestEval(t *testing.T) {
 	region := kcond.Const(true)
-	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/qcom.c", "arch/arm64/kernel/cpu.c", "arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
+	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/dead.c", "drivers/new.c", "drivers/qcom.c", "arch/arm64/kernel/cpu.c",
+		"arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
 	err := NewSession(archTree(), nil).Builds(func(b Build) error {
 		for _, p := range paths {
@@ -178,12 +179,15 @@ func TestEval(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]map[string]string{
-		// Kbuild lists the driver everywhere; whether MSM can be on is a
-		// Kconfig matter the arch labels settle.
-		"drivers/msm.c": {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
+		// Kbuild lists the driver everywhere, but COMPILE_TEST is off, so
+		// MSM needs ARCH_QCOM, which only arm64 has.
+		"drivers/msm.c": {"x86_64": "not built", "i386": "not built", "arm64": "built CONFIG_MSM", "s390": "not built"},
 		// A header is built where the sources including it are; a public
 		// one has no includers to follow.
-		"drivers/msm.h": {"x86_64": "built CONFIG_MSM", "i386": "built CONFIG_MSM", "arm64": "built CONFIG_MSM", "s390": "built CONFIG_MSM"},
+		"drivers/msm.h":  {"x86_64": "not built", "i386": "not built", "arm64": "built CONFIG_MSM", "s390": "not built"},
+		"drivers/dead.c": {"x86_64": "not built", "i386": "not built", "arm64": "not built", "s390": "not built"},
+		// No Kconfig defines NEW yet, so nothing rules it out.
+		"drivers/new.c": {"x86_64": "built CONFIG_NEW", "i386": "built CONFIG_NEW", "arm64": "built CONFIG_NEW", "s390": "built CONFIG_NEW"},
 		// A symbol only arm64's Kconfig defines is off in the other builds.
 		"drivers/qcom.c":             {"x86_64": "not built", "i386": "not built", "arm64": "built CONFIG_ARCH_QCOM", "s390": "not built"},
 		"arch/arm64/kernel/cpu.c":    {"x86_64": "not built", "i386": "not built", "arm64": "built true", "s390": "not built"},

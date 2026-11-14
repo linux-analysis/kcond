@@ -204,7 +204,7 @@ func Defined(fsys fs.FS) (map[string]bool, error) {
 // either is unlisted when b's crawl failed. The region is as b reads it
 // (see Build.Region), and both are written plainly (see Build.Plain); a
 // file whose condition is then false, as one listed under another arch's
-// symbol, is not built.
+// symbol, or one b's Kconfig never lets hold (see Listed), is not built.
 func (b Build) Eval(f kernel.File, region *kcond.Expr) FileCond {
 	fc := FileCond{File: f, region: b.Region(f.Path, region), found: kbuild.Unlisted}
 	fc.Region = b.Plain(fc.region)
@@ -218,7 +218,7 @@ func (b Build) Eval(f kernel.File, region *kcond.Expr) FileCond {
 		fc.Status = StatusUnlisted
 	case fc.found == kbuild.Built:
 		fc.Status = StatusBuilt
-		if fc.Kbuild = b.Plain(fc.kbuild); fc.Kbuild.IsConst(false) {
+		if fc.Kbuild = b.Listed(fc.kbuild); fc.Kbuild.IsConst(false) {
 			fc.Status, fc.Kbuild = StatusNotBuilt, nil
 		}
 	case fc.found == kbuild.NotBuilt:
@@ -230,6 +230,17 @@ func (b Build) Eval(f kernel.File, region *kcond.Expr) FileCond {
 		fc.Status = StatusHeader
 	}
 	return fc
+}
+
+// Listed is the condition under which b builds a file its Makefiles list
+// under e, written plainly (see Plain): false when b's Kconfig never lets e
+// hold (see kconfig.Theory.Possible), as for a driver of another arch's
+// hardware, COMPILE_TEST being off (see KconfigOptions).
+func (b Build) Listed(e *kcond.Expr) *kcond.Expr {
+	if b.Possible(e) == kcond.False {
+		return kcond.Const(false)
+	}
+	return b.Plain(e)
 }
 
 // term is the condition under which b builds the changed lines of a file,

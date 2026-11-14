@@ -856,9 +856,9 @@ func files(ctx context.Context, o opts, dirs []string, out io.Writer) error {
 		if !under(p) {
 			continue
 		}
-		e := b.Plain(b.Kbuild.Files[p])
+		e := b.Listed(b.Kbuild.Files[p])
 		if e.IsConst(false) {
-			continue // #included only where the preprocessor drops it
+			continue // #included only where the preprocessor drops it, or never configured
 		}
 		r := fileCond{Path: p, Build: b.Name, Status: builds.StatusBuilt.String(), Kbuild: e.String(), Region: "true", Condition: e.String()}
 		if o.cfg != nil {
