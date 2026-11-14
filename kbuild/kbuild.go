@@ -134,10 +134,12 @@ type Result struct {
 	makes   map[string]bool // directories with a Makefile or Kbuild
 	// compiled lists how each listed source is compiled, with its
 	// object's flags; includers are the #include edges into each .c, .S
-	// and Rust file. forced are the -include flags of LINUXINCLUDE, which
-	// every object gets.
+	// and Rust file, and incEdges the same with the macros each including
+	// file defined before its directive. forced are the -include flags of
+	// LINUXINCLUDE, which every object gets.
 	compiled  map[string][]compilation
 	includers map[string][]edge
+	incEdges  map[string][]incEdge
 	forced    []flag
 	// subdirFlags holds each directory's subdir-ccflags-y and
 	// subdir-asflags-y while the tree is crawled.

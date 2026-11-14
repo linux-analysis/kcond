@@ -45,7 +45,10 @@ A file is `built` under its condition, `unlisted` when no Makefile names
 it, and `not built` when it belongs to another architecture or the
 build's Kconfig never lets its condition hold, as for
 `drivers/block/floppy.c` on arm64, which needs `ARCH_MAY_HAVE_PC_FDC`;
-`COMPILE_TEST` counts as off, as production kernels never set it. A header is
+`COMPILE_TEST` counts as off, as production kernels never set it. A `.c`
+file another source `#include`s reads the macros that source `#define`s
+first, so `lib/decompress_unxz.c`'s `#ifdef STATIC` holds where
+`arch/x86/boot/compressed/misc.c` includes it. A header is
 `built` where the files that include it are, directly or through other
 headers, each under the condition of its `#include` line: a quoted name
 next to the including file, `<name>` through the build's include

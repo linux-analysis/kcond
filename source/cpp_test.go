@@ -483,3 +483,32 @@ x
 		}
 	}
 }
+
+// LinesDefs gives each #include line the macros the file has defined
+// before it, as a file it includes starts with them.
+func TestLinesDefs(t *testing.T) {
+	src := "#include \"first.c\"\n#define STATIC static\n#ifdef CONFIG_X\n#define D\n#endif\n#include \"next.c\"\nint x;\n"
+	lines, defs, err := LinesDefs([]byte(src), kernelC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 7 || len(defs) != 7 {
+		t.Fatalf("LinesDefs = %d lines, %d defs, want 7 each", len(lines), len(defs))
+	}
+	// The file defines both later, and nothing has yet.
+	if got := defs[0]; got["STATIC"].String() != "false" || got["D"].String() != "false" {
+		t.Errorf("defs at the first #include = %v, want both false", got)
+	}
+	// After the first #include, a header may have defined D as well.
+	want := map[string]string{"STATIC": "true", "D": `"defined(D)" || CONFIG_X=y`}
+	for name, w := range want {
+		if got := defs[5][name]; got == nil || got.String() != w {
+			t.Errorf("defs[5][%s] = %v, want %s", name, got, w)
+		}
+	}
+	for _, i := range []int{1, 2, 3, 4, 6} {
+		if defs[i] != nil {
+			t.Errorf("defs[%d] = %v, want nil off #include lines", i, defs[i])
+		}
+	}
+}

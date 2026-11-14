@@ -3,6 +3,7 @@ package source
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -81,6 +82,19 @@ const maxDefinition = 4096
 // units alike, so its lines count where either compiles them, unless
 // code.KeepAssembly.
 func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
+	conds, _, err := cppLines(src, code, false)
+	return conds, err
+}
+
+// LinesDefs is Lines with, at the index of each #include line, the macros
+// the file has #defined or #undefined before the directive, each with the
+// condition under which it is defined there; nil at other lines and where
+// the file has done neither.
+func LinesDefs(src []byte, code Code) ([]*kcond.Expr, []map[string]*kcond.Expr, error) {
+	return cppLines(src, code, true)
+}
+
+func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string]*kcond.Expr, error) {
 	lines := strings.Split(string(src), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -110,6 +124,10 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 		sawElse bool
 	}
 	conds := make([]*kcond.Expr, len(lines))
+	var kept []map[string]*kcond.Expr
+	if keepDefs {
+		kept = make([]map[string]*kcond.Expr, len(lines))
+	}
 	var stack []frame
 	// levels[k] is the condition inside the outermost k frames.
 	levels := []*kcond.Expr{kcond.Const(true)}
@@ -164,7 +182,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 		case "if", "ifdef", "ifndef":
 			c, err := directiveCond(name, rest, code, defs)
 			if err != nil {
-				return nil, errorf("%v", err)
+				return nil, nil, errorf("%v", err)
 			}
 			if name == "ifndef" && first {
 				guard, guardLine = firstIdent(rest), start
@@ -173,11 +191,11 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 			opens = true
 		case "elif", "elifdef", "elifndef", "else":
 			if len(stack) == 0 {
-				return nil, errorf("no matching #if")
+				return nil, nil, errorf("no matching #if")
 			}
 			top := &stack[len(stack)-1]
 			if top.sawElse {
-				return nil, errorf("after #else")
+				return nil, nil, errorf("after #else")
 			}
 			c := kcond.Const(true)
 			if name == "else" {
@@ -185,7 +203,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 			} else {
 				var err error
 				if c, err = directiveCond(strings.TrimPrefix(name, "el"), rest, code, defs); err != nil {
-					return nil, errorf("%v", err)
+					return nil, nil, errorf("%v", err)
 				}
 			}
 			top.prev = append(top.prev, top.cur)
@@ -193,7 +211,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 			opens = true
 		case "endif":
 			if len(stack) == 0 {
-				return nil, errorf("no matching #if")
+				return nil, nil, errorf("no matching #if")
 			}
 			stack = stack[:len(stack)-1]
 		case "define", "undef":
@@ -212,6 +230,9 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 			}
 			guard = ""
 		case "include":
+			if keepDefs && len(defs) > 0 {
+				kept[start] = maps.Clone(defs) // what the included file starts with
+			}
 			for id, e := range defs {
 				track(id, kcond.Or(e, kcond.And(levels[len(stack)], macro(id, code))))
 			}
@@ -223,7 +244,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 		}
 	}
 	if len(stack) > 0 {
-		return nil, fmt.Errorf("kcond: %d unterminated #if", len(stack))
+		return nil, nil, fmt.Errorf("kcond: %d unterminated #if", len(stack))
 	}
 	if code.Assembly == kcond.Unknown && !code.KeepAssembly {
 		either := map[*kcond.Expr]*kcond.Expr{}
@@ -236,7 +257,7 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 			conds[i] = e
 		}
 	}
-	return conds, nil
+	return conds, kept, nil
 }
 
 // EitherUnit is the condition c of a header's line where a C or an

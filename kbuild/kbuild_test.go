@@ -34,6 +34,22 @@ func crawl(t *testing.T, files map[string]string) *Result {
 	return r
 }
 
+// parse parses condition s, failing t on an error.
+func parse(t *testing.T, s string) *kcond.Expr {
+	t.Helper()
+	e, err := kcond.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// equal reports whether conditions a and b are known to be equivalent.
+func equal(a, b *kcond.Expr) bool {
+	eq, ok := kcond.Equal(a, b)
+	return ok && eq
+}
+
 // expect checks the condition of each file; "" means not built.
 func expect(t *testing.T, r *Result, want map[string]string) {
 	t.Helper()

@@ -24,6 +24,8 @@ const moduleAtom = "defined(MODULE)"
 //   - A macro a -D flag of the source's object defines holds where b
 //     compiles the source with the flag; elsewhere a header may still
 //     define it, so the atom stays.
+//   - A macro a file #including the source defines before the directive
+//     holds where b compiles the source there (see kbuild.Result.Macros).
 //
 // Headers and sources b does not list keep the atoms of MODULE and -D
 // macros.
@@ -36,6 +38,7 @@ func (b Build) Region(path string, region *kcond.Expr) *kcond.Expr {
 	if st != kbuild.Built {
 		return region
 	}
+	region = b.Kbuild.Macros(path, region)
 	for _, atom := range region.Opaque() {
 		name, ok := strings.CutPrefix(atom, "defined(")
 		if !ok {

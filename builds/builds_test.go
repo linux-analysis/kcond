@@ -446,6 +446,32 @@ func TestRegionDefines(t *testing.T) {
 	}
 }
 
+// The region of a source another includes reads the macros that one
+// defines before the directive.
+func TestRegionIncluderMacros(t *testing.T) {
+	fsys := fstest.MapFS{
+		"Makefile":      {Data: []byte("core-y += boot/ lib/\n")},
+		"boot/Makefile": {Data: []byte("obj-y += misc.o\n")},
+		"boot/misc.c":   {Data: []byte("#define STATIC static\n#include \"../lib/dec.c\"\n")},
+		"lib/Makefile":  {Data: []byte("obj-$(CONFIG_DEC) += dec.o\n")},
+		"lib/dec.c":     {},
+	}
+	res, err := kbuild.Crawl(fsys, kbuild.Options{Arch: "x86"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := Build{Arch: "x86", Name: "x86_64", X86_64: true, Kbuild: res}
+	c := Term(b.Eval(file("lib/dec.c"), p(t, `"defined(STATIC)"`)))
+	// misc.c, always compiled, includes dec.c with STATIC defined.
+	if want := p(t, "true"); !equal(c, want) {
+		t.Errorf("Term = %s, want %s", c, want)
+	}
+	c = Term(b.Eval(file("lib/dec.c"), p(t, `!"defined(STATIC)"`)))
+	if want := p(t, `CONFIG_DEC && !"defined(STATIC)"`); !equal(c, want) {
+		t.Errorf("Term of the #else = %s, want %s", c, want)
+	}
+}
+
 func equal(a, b *kcond.Expr) bool {
 	eq, ok := kcond.Equal(a, b)
 	return ok && eq

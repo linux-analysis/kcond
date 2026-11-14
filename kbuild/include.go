@@ -22,6 +22,9 @@ type Include struct {
 	From string
 	Cond *kcond.Expr
 	Name string
+	// Defs are the macros From has #defined or #undefined before the
+	// directive (see source.LinesDefs).
+	Defs map[string]*kcond.Expr
 }
 
 // Includes are the include directives of a tree.
@@ -62,12 +65,14 @@ type incRef struct {
 }
 
 // incLine is an #include line: the name it gives, with its base name,
-// whether it is quoted ("name") rather than bracketed (<name>), and the
-// condition of its line.
+// whether it is quoted ("name") rather than bracketed (<name>), the
+// condition of its line and, for a .c or .S file, the macros the file has
+// defined before it.
 type incLine struct {
 	name, base string
 	quoted     bool
 	cond       *kcond.Expr
+	defs       map[string]*kcond.Expr
 }
 
 // GrepFS is a file system that lists the files containing a string, and
@@ -95,7 +100,13 @@ var (
 func incLines(data []byte, p string) []incLine {
 	code := kernel.CodeOf(p)
 	code.KeepAssembly = true
-	cpp, _ := source.Lines(data, code)
+	var cpp []*kcond.Expr
+	var defs []map[string]*kcond.Expr
+	if bytes.Contains(data, []byte(`.c"`)) || bytes.Contains(data, []byte(`.S"`)) {
+		cpp, defs, _ = source.LinesDefs(data, code)
+	} else {
+		cpp, _ = source.Lines(data, code)
+	}
 	var ds []incLine
 	inComment := false
 	for i, line := range strings.Split(string(data), "\n") {
@@ -113,7 +124,11 @@ func incLines(data []byte, p string) []incLine {
 			cond = cpp[i]
 		}
 		name := strings.Clone(m[2]) // not a substring of the file
-		ds = append(ds, incLine{name, path.Base(name), m[1] == `"`, cond})
+		d := incLine{name: name, base: path.Base(name), quoted: m[1] == `"`, cond: cond}
+		if ext := path.Ext(name); d.quoted && (ext == ".c" || ext == ".S") && i < len(defs) {
+			d.defs = defs[i]
+		}
+		ds = append(ds, d)
 	}
 	return ds
 }
@@ -357,9 +372,9 @@ func scanIncludes(fsys fs.FS, list bool) (*Includes, error) {
 				continue
 			}
 			if target, ok := resolveInclude(fsys, path.Dir(p), d.name); ok {
-				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: d.cond})
+				inc.Targets[target] = append(inc.Targets[target], Include{From: p, Cond: d.cond, Defs: d.defs})
 			} else {
-				inc.Unresolved = append(inc.Unresolved, Include{From: p, Cond: d.cond, Name: d.name})
+				inc.Unresolved = append(inc.Unresolved, Include{From: p, Cond: d.cond, Name: d.name, Defs: d.defs})
 			}
 		}
 	}
@@ -614,18 +629,20 @@ func resolveInclude(fsys fs.FS, dir, name string) (string, bool) {
 // scan did not find is looked up in the -I directories of the including
 // source's object, under the flag's condition, and a .c or .S file an
 // -include flag names is included under that flag's. Included files
-// include others, so the conditions propagate as directory conditions do.
+// include others, so the conditions propagate as directory conditions do,
+// a directive under a test of a macro a file above defines read in each
+// way the file is compiled (see resolveFiles).
 func (r *Result) include(fsys fs.FS) {
-	edges := map[string][]edge{}
+	edges := map[string][]incEdge{}
 	for t, ins := range r.Includes.Targets {
 		for _, in := range ins {
-			edges[t] = append(edges[t], edge{in.From, in.Cond})
+			edges[t] = append(edges[t], incEdge{edge{in.From, in.Cond}, in.Defs})
 		}
 	}
 	for _, in := range r.Includes.Unresolved {
 		for _, t := range r.includeDirs(in.From, in.Name, in.Cond) {
 			if isFile(fsys, t.file) {
-				edges[t.file] = append(edges[t.file], edge{in.From, t.cond})
+				edges[t.file] = append(edges[t.file], incEdge{edge{in.From, t.cond}, in.Defs})
 			}
 		}
 	}
@@ -633,11 +650,17 @@ func (r *Result) include(fsys fs.FS) {
 		for _, c := range cs {
 			for _, f := range c.flags {
 				if ext := path.Ext(f.arg); f.kind == includedFile && (ext == ".c" || ext == ".S") && isFile(fsys, f.arg) {
-					edges[f.arg] = append(edges[f.arg], edge{src, f.cond})
+					edges[f.arg] = append(edges[f.arg], incEdge{edge: edge{src, f.cond}})
 				}
 			}
 		}
 	}
-	r.includers = edges
-	r.Files = dirConditions(r.Files, edges, false)
+	r.incEdges, r.includers = edges, map[string][]edge{}
+	for t, ins := range edges {
+		for _, in := range ins {
+			r.includers[t] = append(r.includers[t], in.edge)
+		}
+	}
+	r.Files = dirConditions(r.Files, r.includers, false)
+	r.resolveFiles()
 }

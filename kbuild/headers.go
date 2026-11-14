@@ -21,7 +21,8 @@ import (
 // the files <...> names in the build's include directories, and included
 // lists by header the sources whose objects compile it through an
 // -include flag, made at the first lookup with defined, the macros the -D
-// flags of the objects define (see indexFlags).
+// flags of the objects define (see indexFlags). above holds the macros the
+// files including each file define (see Result.above).
 type headerIndex struct {
 	fsys      fs.FS
 	mu        sync.Mutex
@@ -31,6 +32,7 @@ type headerIndex struct {
 	roots     *includeRoots
 	included  map[string][]edge
 	defined   map[string]bool
+	above     map[string]map[string]bool
 }
 
 // includersOf returns the #include edges into f: a header's, once looked

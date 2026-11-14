@@ -82,6 +82,36 @@ func TestIncludes(t *testing.T) {
 	}
 }
 
+// A file another includes reads the macros that file defines before the
+// directive, as the boot code defines STATIC for the decompressors in lib/:
+// where it is compiled through misc.c STATIC is defined, and where it is
+// compiled on its own the atom stays, as a header may define it.
+func TestIncludedMacros(t *testing.T) {
+	r := crawl(t, map[string]string{
+		"Makefile":      "core-y += boot/ lib/\n",
+		"boot/Makefile": "obj-y += misc.o\n",
+		"boot/misc.c":   "#include <linux/kernel.h>\n#define STATIC static\n#ifdef CONFIG_KXZ\n#include \"../lib/dec.c\"\n#endif\n",
+		"lib/Makefile":  "obj-$(CONFIG_DEC) += dec.o\nobj-y += plain.o\n",
+		"lib/dec.c":     "#ifdef STATIC\n#include \"xz/crc.c\"\n#endif\n#include <linux/mm.h>\n",
+		"lib/xz/crc.c":  "",
+		"lib/plain.c":   "",
+	})
+	static := `("defined(STATIC)" && CONFIG_DEC) || CONFIG_KXZ=y`
+	expect(t, r, map[string]string{"lib/dec.c": "CONFIG_DEC || CONFIG_KXZ=y", "lib/xz/crc.c": static})
+	for _, c := range []struct{ path, e, want string }{
+		{"lib/dec.c", `"defined(STATIC)"`, static},
+		{"lib/dec.c", `!"defined(STATIC)"`, `CONFIG_DEC && !"defined(STATIC)"`},
+		// Two levels down, through dec.c, which does not define it.
+		{"lib/xz/crc.c", `"defined(STATIC)"`, static},
+		// Nothing includes plain.c, so the atom is all there is.
+		{"lib/plain.c", `"defined(STATIC)"`, `"defined(STATIC)"`},
+	} {
+		if got := r.Macros(c.path, parse(t, c.e)); !equal(got, parse(t, c.want)) {
+			t.Errorf("Macros(%s, %s) = %s, want %s", c.path, c.e, got, c.want)
+		}
+	}
+}
+
 // Crawl takes the directives it is given instead of scanning the tree.
 func TestGivenIncludes(t *testing.T) {
 	inc := &Includes{Targets: map[string][]Include{"lib/part.c": {{From: "lib/a.c", Cond: kcond.Var("CONFIG_X", kcond.Enabled)}}}}
