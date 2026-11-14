@@ -112,6 +112,26 @@ func TestIncludedMacros(t *testing.T) {
 	}
 }
 
+// A comparison of a macro the including file defines as an integer holds
+// with its value there, as host1x's debug_hw.c picks the part of each
+// hardware version the file including it defines.
+func TestIncludedMacroValues(t *testing.T) {
+	r := crawl(t, map[string]string{
+		"Makefile":           "core-y += hw/\n",
+		"hw/Makefile":        "obj-$(CONFIG_H1) += host1x01.o\nobj-$(CONFIG_H6) += host1x06.o\n",
+		"hw/host1x01.c":      "#define HOST1X_HW 1\n#include \"debug_hw.c\"\n",
+		"hw/host1x06.c":      "#define HOST1X_HW 6\n#include \"debug_hw.c\"\n",
+		"hw/debug_hw.c":      "#if HOST1X_HW >= 6\n#include \"debug_hw_1x06.c\"\n#else\n#include \"debug_hw_1x01.c\"\n#endif\n",
+		"hw/debug_hw_1x01.c": "",
+		"hw/debug_hw_1x06.c": "",
+	})
+	expect(t, r, map[string]string{"hw/debug_hw_1x01.c": "CONFIG_H1", "hw/debug_hw_1x06.c": "CONFIG_H6"})
+	e := parse(t, `"HOST1X_HW >= 6"`)
+	if got := r.Macros("hw/debug_hw.c", e); got.String() != "CONFIG_H6" {
+		t.Errorf("Macros(debug_hw.c, %s) = %s, want CONFIG_H6", e, got)
+	}
+}
+
 // Crawl takes the directives it is given instead of scanning the tree.
 func TestGivenIncludes(t *testing.T) {
 	inc := &Includes{Targets: map[string][]Include{"lib/part.c": {{From: "lib/a.c", Cond: kcond.Var("CONFIG_X", kcond.Enabled)}}}}

@@ -485,30 +485,87 @@ x
 }
 
 // LinesDefs gives each #include line the macros the file has defined
-// before it, as a file it includes starts with them.
+// before it, as a file it includes starts with them, and the values of
+// those defined as an integer outside any #if.
 func TestLinesDefs(t *testing.T) {
-	src := "#include \"first.c\"\n#define STATIC static\n#ifdef CONFIG_X\n#define D\n#endif\n#include \"next.c\"\nint x;\n"
+	src := "#include \"first.c\"\n#define STATIC static\n#ifdef CONFIG_X\n#define D 2\n#endif\n#define HW (6)\n#include \"next.c\"\nint x;\n"
 	lines, defs, err := LinesDefs([]byte(src), kernelC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lines) != 7 || len(defs) != 7 {
-		t.Fatalf("LinesDefs = %d lines, %d defs, want 7 each", len(lines), len(defs))
+	if len(lines) != 8 || len(defs) != 8 {
+		t.Fatalf("LinesDefs = %d lines, %d defs, want 8 each", len(lines), len(defs))
 	}
-	// The file defines both later, and nothing has yet.
-	if got := defs[0]; got["STATIC"].String() != "false" || got["D"].String() != "false" {
-		t.Errorf("defs at the first #include = %v, want both false", got)
+	// The file defines them later, and nothing has yet.
+	if got := defs[0].Defined; got["STATIC"].String() != "false" || got["D"].String() != "false" || len(defs[0].Values) != 0 {
+		t.Errorf("defs at the first #include = %+v, want all false", defs[0])
 	}
 	// After the first #include, a header may have defined D as well.
-	want := map[string]string{"STATIC": "true", "D": `"defined(D)" || CONFIG_X=y`}
+	want := map[string]string{"STATIC": "true", "D": `"defined(D)" || CONFIG_X=y`, "HW": "true"}
 	for name, w := range want {
-		if got := defs[5][name]; got == nil || got.String() != w {
-			t.Errorf("defs[5][%s] = %v, want %s", name, got, w)
+		if got := defs[6].Defined[name]; got == nil || got.String() != w {
+			t.Errorf("defs[6].Defined[%s] = %v, want %s", name, got, w)
 		}
 	}
-	for _, i := range []int{1, 2, 3, 4, 6} {
+	// D is defined under an #if, so only HW has a value.
+	if v := defs[6].Values; len(v) != 1 || v["HW"] != 6 {
+		t.Errorf("defs[6].Values = %v, want HW 6", v)
+	}
+	for _, i := range []int{1, 2, 3, 4, 5, 7} {
 		if defs[i] != nil {
 			t.Errorf("defs[%d] = %v, want nil off #include lines", i, defs[i])
 		}
+	}
+}
+
+// A macro the file defines as an integer outside any #if has that value in
+// later comparisons, until it is undefined or defined again under an #if;
+// a comparison of literals holds or not.
+func TestLinesValues(t *testing.T) {
+	checkLines(t, `#define N 2
+#if N > 1 && N <= 0x2
+a
+#endif
+#if N
+b
+#endif
+#if 1 > 2
+c
+#endif
+#ifdef CONFIG_X
+#undef N
+#endif
+#if N > 1
+d
+#endif
+#define F(x) 3
+#if F > 1
+e
+#endif`, []string{
+		"true",
+		"true", "true", "true",
+		"true", "true", "true",
+		"false", "false", "false",
+		"CONFIG_X=y", "CONFIG_X=y", "CONFIG_X=y",
+		`"N > 1"`, `"N > 1"`, `"N > 1"`,
+		"true",
+		`"F > 1"`, `"F > 1"`, `"F > 1"`,
+	})
+}
+
+// Resolve reads a comparison Lines left opaque with the values the file
+// including its file gives.
+func TestMacrosResolve(t *testing.T) {
+	m := &Macros{Values: map[string]uint64{"HOST1X_HW": 6}}
+	for atom, want := range map[string]string{"HOST1X_HW >= 6": "true", "HOST1X_HW < 6": "false", "( HOST1X_HW ) == 6": "true"} {
+		if got, ok := m.Resolve(atom, kernelC); !ok || got.String() != want {
+			t.Errorf("Resolve(%q) = %v, %v, want %s", atom, got, ok, want)
+		}
+	}
+	if got, ok := m.Resolve("OTHER >= 6", kernelC); ok {
+		t.Errorf("Resolve of another macro = %v, want not ok", got)
+	}
+	if _, ok := (*Macros)(nil).Resolve("HOST1X_HW >= 6", kernelC); ok {
+		t.Error("nil Macros resolve an atom")
 	}
 }

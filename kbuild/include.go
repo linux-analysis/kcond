@@ -24,7 +24,7 @@ type Include struct {
 	Name string
 	// Defs are the macros From has #defined or #undefined before the
 	// directive (see source.LinesDefs).
-	Defs map[string]*kcond.Expr
+	Defs *source.Macros
 }
 
 // Includes are the include directives of a tree.
@@ -72,7 +72,7 @@ type incLine struct {
 	name, base string
 	quoted     bool
 	cond       *kcond.Expr
-	defs       map[string]*kcond.Expr
+	defs       *source.Macros
 }
 
 // GrepFS is a file system that lists the files containing a string, and
@@ -101,7 +101,7 @@ func incLines(data []byte, p string) []incLine {
 	code := kernel.CodeOf(p)
 	code.KeepAssembly = true
 	var cpp []*kcond.Expr
-	var defs []map[string]*kcond.Expr
+	var defs []*source.Macros
 	if bytes.Contains(data, []byte(`.c"`)) || bytes.Contains(data, []byte(`.S"`)) {
 		cpp, defs, _ = source.LinesDefs(data, code)
 	} else {

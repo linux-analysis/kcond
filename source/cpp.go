@@ -77,8 +77,11 @@ const maxDefinition = 4096
 // itself again), though in a header the file including it may have (as
 // for CREATE_TRACE_POINTS in define_trace.h), unless the header defines
 // it right after testing it, as a guard; an #include may define it
-// again; a definition past maxDefinition reads as the atom again. code
-// tells how the file is compiled; a header is compiled into C and assembly
+// again; a definition past maxDefinition reads as the atom again. One
+// the file defines as an integer literal outside any #if has that value in
+// later comparisons, until the file undefines it or defines it again under
+// an #if: after #define N 2, #if N > 1 holds. code tells how the file is
+// compiled; a header is compiled into C and assembly
 // units alike, so its lines count where either compiles them, unless
 // code.KeepAssembly.
 func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
@@ -86,15 +89,35 @@ func Lines(src []byte, code Code) ([]*kcond.Expr, error) {
 	return conds, err
 }
 
+// Macros are the macros a file has #defined or #undefined before a line:
+// the condition under which each is defined there, and the value of each
+// it last defined as an integer outside any #if.
+type Macros struct {
+	Defined map[string]*kcond.Expr
+	Values  map[string]uint64
+}
+
 // LinesDefs is Lines with, at the index of each #include line, the macros
-// the file has #defined or #undefined before the directive, each with the
-// condition under which it is defined there; nil at other lines and where
-// the file has done neither.
-func LinesDefs(src []byte, code Code) ([]*kcond.Expr, []map[string]*kcond.Expr, error) {
+// the file has #defined or #undefined before the directive; nil at other
+// lines and where the file has done neither.
+func LinesDefs(src []byte, code Code) ([]*kcond.Expr, []*Macros, error) {
 	return cppLines(src, code, true)
 }
 
-func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string]*kcond.Expr, error) {
+// Resolve returns atom, an operand Lines left opaque, read where the macros
+// of m.Values have those values; ok is false when it names none of them.
+func (m *Macros) Resolve(atom string, code Code) (e *kcond.Expr, ok bool) {
+	toks, err := lexIf(atom)
+	if m == nil || err != nil || !slices.ContainsFunc(toks, func(t string) bool { _, ok := m.Values[t]; return ok }) {
+		return nil, false
+	}
+	if e, err = parseIf(atom, code, nil, m.Values); err != nil {
+		return nil, false
+	}
+	return e, true
+}
+
+func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, error) {
 	lines := strings.Split(string(src), "\n")
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
@@ -124,10 +147,11 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string
 		sawElse bool
 	}
 	conds := make([]*kcond.Expr, len(lines))
-	var kept []map[string]*kcond.Expr
+	var kept []*Macros
 	if keepDefs {
-		kept = make([]map[string]*kcond.Expr, len(lines))
+		kept = make([]*Macros, len(lines))
 	}
+	vals := map[string]uint64{} // the macros the file defines as an integer, outside any #if
 	var stack []frame
 	// levels[k] is the condition inside the outermost k frames.
 	levels := []*kcond.Expr{kcond.Const(true)}
@@ -180,7 +204,7 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string
 		opens := false // the line opens a branch and gets its condition
 		switch name {
 		case "if", "ifdef", "ifndef":
-			c, err := directiveCond(name, rest, code, defs)
+			c, err := directiveCond(name, rest, code, defs, vals)
 			if err != nil {
 				return nil, nil, errorf("%v", err)
 			}
@@ -202,7 +226,7 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string
 				top.sawElse = true
 			} else {
 				var err error
-				if c, err = directiveCond(strings.TrimPrefix(name, "el"), rest, code, defs); err != nil {
+				if c, err = directiveCond(strings.TrimPrefix(name, "el"), rest, code, defs, vals); err != nil {
 					return nil, nil, errorf("%v", err)
 				}
 			}
@@ -227,11 +251,16 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []map[string
 				} else {
 					track(id, kcond.And(kcond.Not(level), prev))
 				}
+				if v, ok := intDefinition(rest, id); ok && name == "define" && level.IsConst(true) {
+					vals[id] = v
+				} else {
+					delete(vals, id)
+				}
 			}
 			guard = ""
 		case "include":
 			if keepDefs && len(defs) > 0 {
-				kept[start] = maps.Clone(defs) // what the included file starts with
+				kept[start] = &Macros{maps.Clone(defs), maps.Clone(vals)} // what the included file starts with
 			}
 			for id, e := range defs {
 				track(id, kcond.Or(e, kcond.And(levels[len(stack)], macro(id, code))))
@@ -286,13 +315,14 @@ func firstIdent(s string) string {
 }
 
 // directiveCond returns the condition of an #if, #ifdef or #ifndef line;
-// defs are the macros the file defined or undefined before it.
-func directiveCond(name, rest string, code Code, defs map[string]*kcond.Expr) (*kcond.Expr, error) {
+// defs are the macros the file defined or undefined before it, and vals
+// the values of those it defined as an integer.
+func directiveCond(name, rest string, code Code, defs map[string]*kcond.Expr, vals map[string]uint64) (*kcond.Expr, error) {
 	if name == "if" {
 		if rest == "" {
 			return nil, fmt.Errorf("missing condition")
 		}
-		e, err := parseIf(rest, code, defs)
+		e, err := parseIf(rest, code, defs, vals)
 		if err != nil {
 			return kcond.Var(strings.Join(strings.Fields(rest), " "), kcond.Enabled), nil
 		}
@@ -372,21 +402,24 @@ func StripComments(line string, inComment bool) (string, bool) {
 // IS_BUILTIN(), IS_MODULE(), IS_REACHABLE() (X=y, or X=m with MODULE
 // defined), config_enabled() (IS_BUILTIN before v4.9) and bare CONFIG_
 // symbols map to tristate variables; a CONFIG_X_MODULE macro means X=m.
-// Integer literals are constants. Arch macros such as
-// __i386__ and comparisons of BITS_PER_LONG with an integer map to the Kconfig
-// symbols they follow, and __ASSEMBLY__ to what code tells of the file (see
-// Code and macro). Any other operand, such as a comparison or arithmetic,
-// becomes an opaque atom named by its space-separated tokens.
-func ParseIf(s string, code Code) (*kcond.Expr, error) { return parseIf(s, code, nil) }
+// Integer literals are constants, and so are comparisons of them. Arch
+// macros such as __i386__ and comparisons of BITS_PER_LONG with an integer
+// map to the Kconfig symbols they follow, and __ASSEMBLY__ to what code
+// tells of the file (see Code and macro). Any other operand, such as a
+// comparison of a macro or arithmetic, becomes an opaque atom named by its
+// space-separated tokens.
+func ParseIf(s string, code Code) (*kcond.Expr, error) { return parseIf(s, code, nil, nil) }
 
 // parseIf is ParseIf with defs, the definitions of the macros the file
-// defines or undefines before the line.
-func parseIf(s string, code Code, defs map[string]*kcond.Expr) (*kcond.Expr, error) {
+// defines or undefines before the line, and vals, the values of those it
+// defines as an integer: a comparison of such macros and integer literals
+// holds or not.
+func parseIf(s string, code Code, defs map[string]*kcond.Expr, vals map[string]uint64) (*kcond.Expr, error) {
 	toks, err := lexIf(s)
 	if err != nil {
 		return nil, err
 	}
-	p := &cparser{toks: toks, code: code, defs: defs}
+	p := &cparser{toks: toks, code: code, defs: defs, vals: vals}
 	n, err := p.ternary()
 	if err != nil {
 		return nil, err
@@ -461,6 +494,7 @@ type cparser struct {
 	pos  int
 	code Code
 	defs map[string]*kcond.Expr
+	vals map[string]uint64
 }
 
 func (p *cparser) peek() string {
@@ -602,6 +636,9 @@ func (p *cparser) unary() (*cnode, error) {
 }
 
 func (p *cparser) conv(n *cnode) *kcond.Expr {
+	if v, ok := p.intOf(n); ok {
+		return kcond.Const(v != 0)
+	}
 	switch n.kind {
 	case "||":
 		return kcond.Or(p.conv(n.kids[0]), p.conv(n.kids[1]))
@@ -617,11 +654,6 @@ func (p *cparser) conv(n *cnode) *kcond.Expr {
 		if kcond.IsSymbol(n.name) {
 			return defined(n.name)
 		}
-	case "num":
-		v, err := cInt(n.name)
-		if err == nil {
-			return kcond.Const(v != 0)
-		}
 	case "call":
 		if len(n.kids) == 1 && n.kids[0].kind == "id" && kcond.IsSymbol(n.kids[0].name) {
 			if e, ok := macroCall(n.name, n.kids[0].name); ok {
@@ -635,8 +667,62 @@ func (p *cparser) conv(n *cnode) *kcond.Expr {
 		if e, ok := p.pageSize(n); ok {
 			return e
 		}
+		if e, ok := p.compare(n); ok {
+			return e
+		}
 	}
 	return kcond.Var(strings.Join(p.toks[n.lo:n.hi], " "), kcond.Enabled)
+}
+
+// compare converts a comparison of integers: literals, and macros the file
+// has defined as one.
+func (p *cparser) compare(n *cnode) (*kcond.Expr, bool) {
+	if len(n.kids) != 2 {
+		return nil, false
+	}
+	results, ok := comparisons[p.toks[n.kids[0].hi]]
+	a, aok := p.intOf(n.kids[0])
+	b, bok := p.intOf(n.kids[1])
+	if !ok || !aok || !bok {
+		return nil, false
+	}
+	return kcond.Const(slices.Contains(results, cmp.Compare(a, b))), true
+}
+
+// intOf returns the value of an integer operand.
+func (p *cparser) intOf(n *cnode) (uint64, bool) {
+	switch n.kind {
+	case "num":
+		v, err := cInt(n.name)
+		return v, err == nil
+	case "id":
+		v, ok := p.vals[n.name]
+		return v, ok
+	case "()":
+		return p.intOf(n.kids[0])
+	}
+	return 0, false
+}
+
+// intDefinition returns the value of #define rest, the macro id, which
+// rest starts with, defined as an integer literal, in parentheses or not.
+func intDefinition(rest, id string) (uint64, bool) {
+	body := rest[len(id):]
+	if strings.HasPrefix(body, "(") { // a function-like macro
+		return 0, false
+	}
+	body = strings.TrimSpace(body)
+	if inner, ok := strings.CutPrefix(body, "("); ok {
+		if body, ok = strings.CutSuffix(inner, ")"); !ok {
+			return 0, false
+		}
+		body = strings.TrimSpace(body)
+	}
+	if body == "" || body[0] < '0' || body[0] > '9' {
+		return 0, false
+	}
+	v, err := cInt(body)
+	return v, err == nil
 }
 
 // cInt parses a C integer literal such as 0x10 or 1UL.

@@ -4,13 +4,15 @@ import (
 	"strings"
 
 	"github.com/linux-analysis/kcond"
+	"github.com/linux-analysis/kcond/kernel"
+	"github.com/linux-analysis/kcond/source"
 )
 
 // incEdge is an #include edge into a .c, .S or Rust file, with the macros
 // the including file has defined before the directive (see Include.Defs).
 type incEdge struct {
 	edge
-	defs map[string]*kcond.Expr
+	defs *source.Macros
 }
 
 // maxResolve bounds the includes resolve follows up from a file.
@@ -58,7 +60,7 @@ func (r *Result) ways(n string, e *kcond.Expr, cond func(string) *kcond.Expr, ac
 		terms = append(terms, kcond.And(c.cond, e))
 	}
 	for _, in := range r.incEdges[n] {
-		terms = append(terms, r.resolve(in.parent, kcond.And(in.cond, define(e, in.defs)), cond, active))
+		terms = append(terms, r.resolve(in.parent, kcond.And(in.cond, define(e, in.defs, kernel.CodeOf(n))), cond, active))
 	}
 	return kcond.Or(terms...)
 }
@@ -121,16 +123,21 @@ func (r *Result) definesAbove(p string, e *kcond.Expr) bool {
 		return false
 	}
 	for _, atom := range e.Opaque() {
-		if name, ok := definedName(atom); ok && above[name] {
-			return true
+		// A defined(X) atom is one field, so its key is found too.
+		for _, tok := range strings.Fields(atom) {
+			if above[tok] {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// above returns the macros the files including p, directly or through
-// others, have defined or undefined before their directives. A file in an
-// include cycle may miss some, which leaves its conditions as they were.
+// above returns what the files including p, directly or through others,
+// tell of the macros they have defined or undefined before their
+// directives: the atom defined(X) of each, and X for each with a value. A
+// file in an include cycle may miss some, which leaves its conditions as
+// they were.
 func (r *Result) above(p string) map[string]bool {
 	if r.lazy.above == nil {
 		r.lazy.above = map[string]map[string]bool{}
@@ -141,8 +148,13 @@ func (r *Result) above(p string) map[string]bool {
 	r.lazy.above[p] = nil
 	m := map[string]bool{}
 	for _, in := range r.incEdges[p] {
-		for x := range in.defs {
-			m[x] = true
+		if in.defs != nil {
+			for x := range in.defs.Defined {
+				m["defined("+x+")"] = true
+			}
+			for x := range in.defs.Values {
+				m[x] = true
+			}
 		}
 		for x := range r.above(in.parent) {
 			m[x] = true
@@ -152,21 +164,26 @@ func (r *Result) above(p string) map[string]bool {
 	return m
 }
 
-// define is e, the condition of a line of a file another includes, read
-// where that file has defined the macros of defs: defined(X) holds where
-// defs says, or where it held, as a header the included file reads may
-// define X too.
-func define(e *kcond.Expr, defs map[string]*kcond.Expr) *kcond.Expr {
-	if len(defs) == 0 {
+// define is e, the condition of a line of a file another includes, code
+// telling how it is compiled, read where that file has defined the macros
+// of defs: defined(X) holds where defs says, or where it held, as a header
+// the included file reads may define X too, and a comparison of macros
+// defined as integers holds with their values (see source.Macros.Resolve).
+// shortcut: a value holds through the headers the included file reads, as
+// one would need to #undef it first; refine if one does.
+func define(e *kcond.Expr, defs *source.Macros, code source.Code) *kcond.Expr {
+	if defs == nil {
 		return e
 	}
 	return kcond.Subst(e, func(atom string) *kcond.Expr {
 		if name, ok := definedName(atom); ok {
-			if d, ok := defs[name]; ok {
+			if d, ok := defs.Defined[name]; ok {
 				return kcond.Or(d, kcond.Var(atom, kcond.Enabled))
 			}
+			return nil
 		}
-		return nil
+		v, _ := defs.Resolve(atom, code)
+		return v
 	})
 }
 
