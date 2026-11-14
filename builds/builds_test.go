@@ -472,6 +472,22 @@ func TestRegionIncluderMacros(t *testing.T) {
 	}
 }
 
+// A region that holds only where the file is compiled is the term itself,
+// not ANDed with the Kbuild condition again.
+func TestTermWithin(t *testing.T) {
+	for _, c := range []struct{ kbuild, region, want string }{
+		{"CONFIG_DEC || CONFIG_KXZ", `("defined(STATIC)" && CONFIG_DEC) || CONFIG_KXZ`, `("defined(STATIC)" && CONFIG_DEC) || CONFIG_KXZ`},
+		{"CONFIG_DEC || CONFIG_KXZ", `"defined(STATIC)"`, `"defined(STATIC)" && (CONFIG_DEC || CONFIG_KXZ)`},
+		{"CONFIG_DEC || CONFIG_KXZ", "CONFIG_KXZ", "CONFIG_KXZ"},
+		{"CONFIG_DEC", "true", "CONFIG_DEC"},
+	} {
+		got := Term(FileCond{File: file("lib/dec.c"), Status: StatusBuilt, Kbuild: p(t, c.kbuild), Region: p(t, c.region)})
+		if got.String() != p(t, c.want).String() {
+			t.Errorf("Term(%s, %s) = %s, want %s", c.kbuild, c.region, got, c.want)
+		}
+	}
+}
+
 func equal(a, b *kcond.Expr) bool {
 	eq, ok := kcond.Equal(a, b)
 	return ok && eq

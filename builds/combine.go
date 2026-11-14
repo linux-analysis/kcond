@@ -42,20 +42,32 @@ type FileCond struct {
 // Term is what a changed file contributes to the condition of its change,
 // the OR of its files' terms. Sources, and headers built where the files
 // including them are, contribute their Kbuild condition ANDed with their
-// region; a source that is not built contributes false. The other headers
-// have no Kbuild condition and contribute their region when it names a
-// Kconfig symbol or is never compiled. A file whose condition is unknown
-// contributes its Unknown atom.
+// region (see within); a source that is not built contributes false. The
+// other headers have no Kbuild condition and contribute their region when
+// it names a Kconfig symbol or is never compiled. A file whose condition
+// is unknown contributes its Unknown atom.
 func Term(f FileCond) *kcond.Expr {
 	switch {
 	case f.Status == StatusBuilt:
-		return kcond.And(f.Kbuild, f.Region)
+		return within(f.Kbuild, f.Region)
 	case f.Status == StatusNotBuilt || f.Header && f.Region.IsConst(false):
 		return kcond.Const(false)
 	case f.Header && len(f.Region.Symbols()) > 0:
 		return f.Region
 	}
 	return Unknown(f.Path)
+}
+
+// within is k && r, written as r where r holds only where k does, as a
+// region read through the files including a source holds only where they
+// are compiled (see kbuild.Result.Macros), which kcond.And cannot see.
+func within(k, r *kcond.Expr) *kcond.Expr {
+	if rs := r.Symbols(); !slices.ContainsFunc(k.Symbols(), func(s string) bool { return !slices.Contains(rs, s) }) {
+		if implies, ok := kcond.Implies(r, k); ok && implies {
+			return r
+		}
+	}
+	return kcond.And(k, r)
 }
 
 // Unknown is the condition of a file that is read where kcond cannot
