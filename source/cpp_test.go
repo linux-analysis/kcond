@@ -276,6 +276,13 @@ int foo(void);
 x
 #endif
 `, []string{"true", "true", "true", "true", "true"})
+	// One opened with #if !defined(X), as smartpqi.h's.
+	checkLines(t, `#include <r.h>
+#if !defined(_S_H)
+#define _S_H
+x
+#endif
+`, []string{"true", "true", "true", "true", "true"})
 	// An #ifndef whose #endif does not end the file is a default definition,
 	// which the #include may have made.
 	checkLines(t, `#include <a.h>
@@ -293,10 +300,29 @@ func TestIncludeGuard(t *testing.T) {
 		"#ifndef A\n#define A\n#endif\nx\n":                      -1,
 		"#ifndef A\n#endif\n#ifdef B\n#endif\n":                  -1,
 		"#ifndef A\n#if B\n#endif\n#endif\n/* end */\n":          0,
+		"#include <a.h>\n#if !defined(A)\n#define A\n#endif\n":   1,
+		"#if !defined A\n#define A\n#endif\n":                    0,
+		"#if !defined(A) || defined(B)\n#define A\n#endif\n":     -1,
 		"x\n": -1,
 	} {
 		if got := IncludeGuard(strings.Split(src, "\n")); got != want {
 			t.Errorf("%q: %d, want %d", src, got, want)
+		}
+	}
+}
+
+func TestGuardMacro(t *testing.T) {
+	for line, want := range map[string]string{
+		"#ifndef X /* c */":       "X",
+		"# if !defined( X ) // c": "X",
+		"#if !defined X":          "X",
+		"#if !defined(X) && Y":    "",
+		"#ifdef X":                "",
+		"#ifndef 1":               "",
+		"int x;":                  "",
+	} {
+		if got := GuardMacro(line); got != want {
+			t.Errorf("%q: %q, want %q", line, got, want)
 		}
 	}
 }

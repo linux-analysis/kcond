@@ -88,10 +88,7 @@ type GrepFS interface {
 	GrepLines(strs []string, globs ...string) (map[string][]string, error)
 }
 
-var (
-	includeLine = regexp.MustCompile(`^\s*#\s*include\s*(["<])([^">]+)[">]`)
-	guardLine   = regexp.MustCompile(`^\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:/[*/].*)?$`)
-)
+var includeLine = regexp.MustCompile(`^\s*#\s*include\s*(["<])([^">]+)[">]`)
 
 // incLines reads the #include lines of the source data of file p, with
 // the condition of each line; unbalanced directives leave every line
@@ -240,9 +237,9 @@ func listIncludes(fsys fs.FS) (*incListing, error) {
 // from its grepped directive lines read as the file, since only
 // directives decide the conditions. #define is not grepped, as git grep
 // takes minutes on its millions of matches, so a header's guard gets its
-// #define back after a leading #ifndef, and a file with a continued
-// directive line, a line leaving a comment open over lines the grep left
-// out, or an #ifndef that may be its guard after other directives (see
+// #define back after a leading guard test (see source.GuardMacro), and a
+// file with a continued directive line, a line leaving a comment open over
+// lines the grep left out, or a guard test after other directives (see
 // source.IncludeGuard), is read whole.
 func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 	if ls, ok := l.read[f]; ok {
@@ -264,8 +261,8 @@ func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 		// The guard is the first directive; comment lines the grep matched
 		// may come before it.
 		if first >= 0 && path.Ext(f) == ".h" {
-			if m := guardLine.FindStringSubmatch(ls[first]); m != nil {
-				ls = slices.Insert(slices.Clone(ls), first+1, "#define "+m[1])
+			if x := source.GuardMacro(ls[first]); x != "" {
+				ls = slices.Insert(slices.Clone(ls), first+1, "#define "+x)
 			}
 		}
 		// shortcut: a block comment opened on a line the grep left out, as

@@ -68,9 +68,9 @@ const maxDefinition = 4096
 // change wrapping code in #ifdef CONFIG_X reads as one to CONFIG_X; #endif
 // gets that of the branch it closes; other directives that of their region.
 // Conditions that ParseIf rejects become opaque atoms; unbalanced directives are an
-// error. An include guard (an #ifndef X directly followed by #define X whose
-// #endif ends the file, whatever comes before it; see IncludeGuard) adds no
-// condition. A macro the file itself #defines or #undefs is known after
+// error. An include guard (an #ifndef X or #if !defined(X) directly
+// followed by #define X whose #endif ends the file, whatever comes before
+// it; see IncludeGuard) adds no condition. A macro the file itself #defines or #undefs is known after
 // that, where it would otherwise be an opaque atom: defined there, or not,
 // under the condition of the directive's line, and in a C or assembly
 // source undefined before the first #include, as nothing else could have
@@ -209,8 +209,8 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 			if err != nil {
 				return nil, nil, errorf("%v", err)
 			}
-			if name == "ifndef" && start == guardAt {
-				guard, guardLine = firstIdent(rest), start
+			if start == guardAt {
+				guard, guardLine = guardMacro(name, rest), start
 			}
 			stack = append(stack, frame{cur: c})
 			opens = true
@@ -289,10 +289,10 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 	return conds, kept, nil
 }
 
-// IncludeGuard returns the index in lines, those of a file, of the #ifndef
-// that may be its include guard: the one outside any #if whose #endif is
-// the file's last line of code; -1 when there is none. It is the guard
-// when the next directive #defines its macro (see Lines).
+// IncludeGuard returns the index in lines, those of a file, of the test
+// that may open its include guard (see GuardMacro): the one outside any #if
+// whose #endif is the file's last line of code; -1 when there is none. It
+// opens the guard when the next directive #defines its macro (see Lines).
 func IncludeGuard(lines []string) int {
 	at, end, last, depth := -1, -1, -1, 0
 	for inComment, i := false, 0; i < len(lines); i++ {
@@ -307,11 +307,11 @@ func IncludeGuard(lines []string) int {
 		if !ok {
 			continue
 		}
-		switch name, _ := splitDirective(d); name {
+		switch name, rest := splitDirective(d); name {
 		case "if", "ifdef", "ifndef":
 			if depth == 0 {
 				at, end = -1, -1
-				if name == "ifndef" {
+				if guardMacro(name, rest) != "" {
 					at = i
 				}
 			}
@@ -326,6 +326,39 @@ func IncludeGuard(lines []string) int {
 		return -1
 	}
 	return at
+}
+
+// GuardMacro returns X when line is a directive an include guard opens
+// with (see IncludeGuard), comments aside; "" otherwise.
+func GuardMacro(line string) string {
+	text, _ := StripComments(line, false)
+	d, ok := strings.CutPrefix(strings.TrimSpace(text), "#")
+	if !ok {
+		return ""
+	}
+	return guardMacro(splitDirective(d))
+}
+
+// guardMacro returns X when the directive name with rest is a test an
+// include guard opens with: #ifndef X, #if !defined(X) or #if !defined X;
+// "" otherwise.
+func guardMacro(name, rest string) string {
+	toks, _ := lexIf(rest)
+	if name == "if" {
+		if len(toks) == 5 && toks[2] == "(" && toks[4] == ")" {
+			toks = []string{toks[0], toks[1], toks[3]}
+		}
+		if len(toks) != 3 || toks[0] != "!" || toks[1] != "defined" {
+			return ""
+		}
+		toks = toks[2:]
+	} else if name != "ifndef" {
+		return ""
+	}
+	if len(toks) != 1 || firstIdent(toks[0]) != toks[0] || toks[0][0] >= '0' && toks[0][0] <= '9' {
+		return ""
+	}
+	return toks[0]
 }
 
 // EitherUnit is the condition c of a header's line where a C or an
