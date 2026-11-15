@@ -241,18 +241,20 @@ func listIncludes(fsys fs.FS) (*incListing, error) {
 // directives decide the conditions. #define is not grepped, as git grep
 // takes minutes on its millions of matches, so a header's guard gets its
 // #define back after a leading #ifndef, and a file with a continued
-// directive line, or a line leaving a comment open over lines the grep
-// left out, is read whole.
+// directive line, a line leaving a comment open over lines the grep left
+// out, or an #ifndef that may be its guard after other directives (see
+// source.IncludeGuard), is read whole.
 func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 	if ls, ok := l.read[f]; ok {
 		return ls, nil
 	}
 	ls := l.grepped[f]
 	var ds []incLine
+	first := slices.IndexFunc(ls, func(line string) bool { return strings.HasPrefix(strings.TrimSpace(line), "#") })
 	if slices.ContainsFunc(ls, func(line string) bool {
 		_, open := source.StripComments(line, false)
 		return open || strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\") // as Lines continues it
-	}) {
+	}) || source.IncludeGuard(ls) > first {
 		data, err := fs.ReadFile(fsys, f)
 		if err != nil {
 			return nil, err
@@ -261,9 +263,9 @@ func (l *incListing) lines(fsys fs.FS, f string) ([]incLine, error) {
 	} else {
 		// The guard is the first directive; comment lines the grep matched
 		// may come before it.
-		if i := slices.IndexFunc(ls, func(line string) bool { return strings.HasPrefix(strings.TrimSpace(line), "#") }); i >= 0 && path.Ext(f) == ".h" {
-			if m := guardLine.FindStringSubmatch(ls[i]); m != nil {
-				ls = slices.Insert(slices.Clone(ls), i+1, "#define "+m[1])
+		if first >= 0 && path.Ext(f) == ".h" {
+			if m := guardLine.FindStringSubmatch(ls[first]); m != nil {
+				ls = slices.Insert(slices.Clone(ls), first+1, "#define "+m[1])
 			}
 		}
 		// shortcut: a block comment opened on a line the grep left out, as

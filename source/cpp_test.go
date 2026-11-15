@@ -268,6 +268,37 @@ int foo(void);
 #endif
 #endif /* _LINUX_FOO_H */
 `, []string{"true", "true", "true", "CONFIG_FOO=y", "CONFIG_FOO=y", "CONFIG_FOO=y", "true"})
+	// A guard after an #include, as rfcomm.h's, which the #include could
+	// otherwise have defined.
+	checkLines(t, `#include <r.h>
+#ifndef _R_H
+#define _R_H
+x
+#endif
+`, []string{"true", "true", "true", "true", "true"})
+	// An #ifndef whose #endif does not end the file is a default definition,
+	// which the #include may have made.
+	checkLines(t, `#include <a.h>
+#ifndef pr_fmt
+#define pr_fmt(x) x
+#endif
+y
+`, []string{"true", `!"defined(pr_fmt)"`, `!"defined(pr_fmt)"`, `!"defined(pr_fmt)"`, "true"})
+}
+
+func TestIncludeGuard(t *testing.T) {
+	for src, want := range map[string]int{
+		"#ifndef A\n#define A\n#endif\n":                         0,
+		"#include <a.h>\n#ifndef A\n#define A\n#endif /* A */\n": 1,
+		"#ifndef A\n#define A\n#endif\nx\n":                      -1,
+		"#ifndef A\n#endif\n#ifdef B\n#endif\n":                  -1,
+		"#ifndef A\n#if B\n#endif\n#endif\n/* end */\n":          0,
+		"x\n": -1,
+	} {
+		if got := IncludeGuard(strings.Split(src, "\n")); got != want {
+			t.Errorf("%q: %d, want %d", src, got, want)
+		}
+	}
 }
 
 // A macro the file itself defines or undefines before a test is known

@@ -68,7 +68,8 @@ const maxDefinition = 4096
 // change wrapping code in #ifdef CONFIG_X reads as one to CONFIG_X; #endif
 // gets that of the branch it closes; other directives that of their region.
 // Conditions that ParseIf rejects become opaque atoms; unbalanced directives are an
-// error. An include guard (a leading #ifndef X followed by #define X) adds no
+// error. An include guard (an #ifndef X directly followed by #define X whose
+// #endif ends the file, whatever comes before it; see IncludeGuard) adds no
 // condition. A macro the file itself #defines or #undefs is known after
 // that, where it would otherwise be an opaque atom: defined there, or not,
 // under the condition of the directive's line, and in a C or assembly
@@ -170,7 +171,7 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 			conds[j] = c
 		}
 	}
-	inComment, first, guard, guardLine := false, true, "", 0
+	inComment, guardAt, guard, guardLine := false, IncludeGuard(lines), "", 0
 	track := func(id string, e *kcond.Expr) {
 		if e.Len() > maxDefinition {
 			delete(defs, id)
@@ -208,7 +209,7 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 			if err != nil {
 				return nil, nil, errorf("%v", err)
 			}
-			if name == "ifndef" && first {
+			if name == "ifndef" && start == guardAt {
 				guard, guardLine = firstIdent(rest), start
 			}
 			stack = append(stack, frame{cur: c})
@@ -266,7 +267,6 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 				track(id, kcond.Or(e, kcond.And(levels[len(stack)], macro(id, code))))
 			}
 		}
-		first = false
 		update()
 		if opens {
 			setConds(start, i, levels[len(stack)])
@@ -287,6 +287,45 @@ func cppLines(src []byte, code Code, keepDefs bool) ([]*kcond.Expr, []*Macros, e
 		}
 	}
 	return conds, kept, nil
+}
+
+// IncludeGuard returns the index in lines, those of a file, of the #ifndef
+// that may be its include guard: the one outside any #if whose #endif is
+// the file's last line of code; -1 when there is none. It is the guard
+// when the next directive #defines its macro (see Lines).
+func IncludeGuard(lines []string) int {
+	at, end, last, depth := -1, -1, -1, 0
+	for inComment, i := false, 0; i < len(lines); i++ {
+		var text string
+		text, inComment = StripComments(lines[i], inComment)
+		t := strings.TrimSpace(text)
+		if t == "" {
+			continue
+		}
+		last = i
+		d, ok := strings.CutPrefix(t, "#")
+		if !ok {
+			continue
+		}
+		switch name, _ := splitDirective(d); name {
+		case "if", "ifdef", "ifndef":
+			if depth == 0 {
+				at, end = -1, -1
+				if name == "ifndef" {
+					at = i
+				}
+			}
+			depth++
+		case "endif":
+			if depth--; depth == 0 {
+				end = i
+			}
+		}
+	}
+	if end != last {
+		return -1
+	}
+	return at
 }
 
 // EitherUnit is the condition c of a header's line where a C or an

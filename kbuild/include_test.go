@@ -251,8 +251,9 @@ func (g grepTree) GrepLines(strs []string, globs ...string) (map[string][]string
 // The directive lines a GrepFS lists give the #include lines and their
 // conditions a read of each file would: past a comment the grep's lines
 // leave open, an #else after a tab, a guard after comment lines that
-// mention #include, a guard with a comment, and a continuation followed
-// by spaces.
+// mention #include, a guard with a comment, a continuation followed by
+// spaces, a guard after an #include, and an #ifndef after one that is not
+// a guard.
 func TestListIncludesGrep(t *testing.T) {
 	files := map[string]string{
 		"a.c": "#include <a1.h> /* first,\n   second */\n#include <a2.h>\n",
@@ -260,6 +261,8 @@ func TestListIncludesGrep(t *testing.T) {
 		"c.h": "/*\n * Do not #include this directly.\n */\n#ifndef _C_H\n#define _C_H\n#include <c1.h>\n#endif\n",
 		"d.h": "#ifndef _D_H /* guard */\n#define _D_H\n#include <d1.h>\n#endif\n",
 		"e.c": "#if defined(CONFIG_A) || \\  \n    defined(CONFIG_B)\n#include <e1.h>\n#endif\n",
+		"f.h": "#include <f0.h>\n#ifndef _F_H\n#define _F_H\n#include <f1.h>\n#endif\n",
+		"g.h": "#include <g0.h>\n#ifndef __ASSEMBLY__\n#include <g1.h>\n#endif\n",
 	}
 	fsys := grepTree{FS: tree(files)}
 	list, err := listIncludes(fsys)
@@ -280,6 +283,9 @@ func TestListIncludesGrep(t *testing.T) {
 		}
 		if !slices.Equal(got, want) {
 			t.Errorf("%s: %q, want %q", p, got, want)
+		}
+		if p == "f.h" && !slices.Equal(got, []string{"f0.h true", "f1.h true"}) {
+			t.Errorf("guard after an #include: %q", got)
 		}
 	}
 }
