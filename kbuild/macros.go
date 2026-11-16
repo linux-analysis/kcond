@@ -1,6 +1,7 @@
 package kbuild
 
 import (
+	"path"
 	"strings"
 
 	"github.com/linux-analysis/kcond"
@@ -22,16 +23,65 @@ const maxResolve = 32
 // macros the files including p #define before their directives: the OR,
 // over the ways the build compiles p, of the condition of that way and e
 // there (see resolve). It is e where no file above p defines a macro e
-// tests, as for a header.
-// shortcut: a header's includers are not read for the macros they define;
-// refine if the region of a template header such as paging_tmpl.h matters.
+// tests. A header reads a macro only sources define as undefined where
+// none of them includes it (see sourceMacros).
+// shortcut: a header's includers are not read for the macros they define,
+// so a template header such as paging_tmpl.h keeps its #if PTTYPE == 64,
+// and one another header defines keeps its atom; refine if one matters.
 func (r *Result) Macros(p string, e *kcond.Expr) *kcond.Expr {
 	r.lazy.mu.Lock()
 	defer r.lazy.mu.Unlock()
+	if path.Ext(p) == ".h" {
+		return r.sourceMacros(p, e)
+	}
 	if !r.definesAbove(p, e) {
 		return e
 	}
 	return r.resolve(p, e, r.fileCond, map[string]bool{})
+}
+
+// sourceMacros returns e, the condition of lines of header p, read where
+// the macros whose defined() it tests are undefined when only sources
+// define them (see Includes.sourceDefined): e so read, under the condition
+// of p through the sources that define none of them, ORed with e under
+// that through those that do; e when the first adds nothing, as for a
+// header only those sources include.
+func (r *Result) sourceMacros(p string, e *kcond.Expr) *kcond.Expr {
+	undefined, definers := e, map[string]bool{}
+	for _, atom := range e.Opaque() {
+		if x, ok := definedName(atom); ok {
+			if files := r.Includes.sourceDefined(r.lazy.fsys, x); files != nil {
+				undefined = kcond.With(undefined, atom, false)
+				for _, f := range files {
+					definers[f] = true
+				}
+			}
+		}
+	}
+	if len(definers) == 0 {
+		return e
+	}
+	nodes, k, many := r.reach(p)
+	if k == nil {
+		return e
+	}
+	// shortcut: past maxFold sources the sources that define the macros
+	// are a few of many, so p reads as compiled both ways wherever it is;
+	// fold if a header that many include tests such a macro.
+	without, with := k, k
+	if !many {
+		without, with = r.fold(p, nodes, func(src string, c compilation) (*kcond.Expr, *kcond.Expr) {
+			if definers[src] {
+				return kcond.Const(false), c.cond
+			}
+			return c.cond, kcond.Const(false)
+		})
+	}
+	u := kcond.And(without, undefined)
+	if u.IsConst(false) {
+		return e
+	}
+	return kcond.Or(u, kcond.And(with, e))
 }
 
 // resolve returns e, a condition of lines of file n, read in each way the

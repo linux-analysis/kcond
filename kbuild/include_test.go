@@ -132,6 +132,78 @@ func TestIncludedMacroValues(t *testing.T) {
 	}
 }
 
+// A header reads a macro only sources define, and no Makefile with -D, as
+// undefined where none of them includes it, as mmzone.h's #ifndef
+// __GENERATING_BOUNDS_H holds wherever a source other than bounds.c
+// includes it. A macro a header or an included .c file defines, one a
+// Makefile names, one no file defines, and one only its includer does,
+// keep their atoms. The macros of the regions a crawl is given are grepped
+// for at once, the others one at a time.
+func TestHeaderSourceMacros(t *testing.T) {
+	files := map[string]string{
+		"Makefile":               "LINUXINCLUDE := -I$(srctree)/include\ncore-y := kernel/ mm/ kvm/ lib/\n",
+		"kernel/Makefile":        "obj-y += bounds.o\n",
+		"kernel/bounds.c":        "#define __GENERATING_BOUNDS_H\n#define FLAGGED\n#include <linux/mmzone.h>\n",
+		"mm/Makefile":            "obj-$(CONFIG_MM) += a.o\nccflags-y += -DFLAGGED\n",
+		"mm/a.c":                 "#include <linux/mmzone.h>\n",
+		"include/linux/mmzone.h": "#define HDEF\n",
+		"kvm/Makefile":           "obj-$(CONFIG_KVM) += mmu.o\n",
+		"kvm/mmu.c":              "#define TMPL\n#include \"tmpl.h\"\n",
+		"kvm/tmpl.h":             "",
+		"lib/Makefile":           "obj-$(CONFIG_LIB) += outer.o\n",
+		"lib/outer.c":            "#include \"inner.c\"\n",
+		"lib/inner.c":            "#define INNER\n#include <linux/mmzone.h>\n",
+	}
+	cases := []struct{ path, e, want string }{
+		{"include/linux/mmzone.h", `!"defined(__GENERATING_BOUNDS_H)"`, `CONFIG_LIB || CONFIG_MM || !"defined(__GENERATING_BOUNDS_H)"`},
+		{"include/linux/mmzone.h", `"defined(__GENERATING_BOUNDS_H)"`, `"defined(__GENERATING_BOUNDS_H)"`},
+		{"include/linux/mmzone.h", `!"defined(HDEF)"`, `!"defined(HDEF)"`},
+		{"include/linux/mmzone.h", `!"defined(FLAGGED)"`, `!"defined(FLAGGED)"`},
+		{"include/linux/mmzone.h", `!"defined(INNER)"`, `!"defined(INNER)"`},
+		{"include/linux/mmzone.h", `!"defined(__OPTIMIZE__)"`, `!"defined(__OPTIMIZE__)"`},
+		{"kvm/tmpl.h", `!"defined(TMPL)"`, `!"defined(TMPL)"`},
+	}
+	var es []*kcond.Expr
+	for _, c := range cases {
+		es = append(es, parse(t, c.e))
+	}
+	// Five macros are grepped for, FLAGGED being named after -D.
+	for _, given := range []bool{false, true} {
+		var regions []*kcond.Expr
+		greps := 5
+		if given {
+			regions, greps = es, 1
+		}
+		fsys := countGreps{grepTree: grepTree{FS: tree(files), found: []string{"lib/outer.c"}}, n: new(int)}
+		r, err := Crawl(fsys, Options{Arch: "x86", Regions: regions})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, c := range cases {
+			if got := r.Macros(c.path, es[i]); !equal(got, parse(t, c.want)) {
+				t.Errorf("given %v: Macros(%s, %s) = %s, want %s", given, c.path, c.e, got, c.want)
+			}
+		}
+		if *fsys.n != greps {
+			t.Errorf("given %v: %d greps for #defines, want %d", given, *fsys.n, greps)
+		}
+	}
+}
+
+// countGreps is a grepTree that counts the greps for #defines (see
+// grepDefines).
+type countGreps struct {
+	grepTree
+	n *int
+}
+
+func (c countGreps) GrepLines(strs []string, globs ...string) (map[string][]string, error) {
+	if slices.Equal(globs, []string{"*.c", "*.S", "*.h"}) && !slices.Contains(strs, "#include") {
+		*c.n++
+	}
+	return c.grepTree.GrepLines(strs, globs...)
+}
+
 // Crawl takes the directives it is given instead of scanning the tree.
 func TestGivenIncludes(t *testing.T) {
 	inc := &Includes{Targets: map[string][]Include{"lib/part.c": {{From: "lib/a.c", Cond: kcond.Var("CONFIG_X", kcond.Enabled)}}}}
@@ -322,7 +394,7 @@ func TestScanIncludesListed(t *testing.T) {
 		"a.c": "#include \"x.c\"\n", "b.S": "# include \"y.S\"\n", "c.h": "#include \"x.c\"\n",
 		"d.c": "#include <x.h>\n", "e.c": "#\tinclude \"x.c\"\n", "x.c": "", "y.S": "",
 	})}
-	inc, err := scanIncludes(fsys, true)
+	inc, err := scanIncludes(fsys, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

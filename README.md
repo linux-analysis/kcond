@@ -50,7 +50,11 @@ a file `#define`s as an integer has that value in its later `#if`s, and a
 `.c` file another source `#include`s reads the macros that source
 `#define`s first, so `lib/decompress_unxz.c`'s `#ifdef STATIC` holds where
 `arch/x86/boot/compressed/misc.c` includes it, and host1x's
-`#if HOST1X_HW >= 6` holds in the hardware versions from 6 on. A header is
+`#if HOST1X_HW >= 6` holds in the hardware versions from 6 on. A header
+reads a macro that only `.c` and `.S` files `#define`, and no Makefile
+passes with `-D`, as undefined where those files do not include it, so
+`include/linux/mmzone.h`'s `#ifndef __GENERATING_BOUNDS_H` holds wherever
+a source other than `kernel/bounds.c` includes it. A header is
 `built` where the files that include it are, directly or through other
 headers, each under the condition of its `#include` line: a quoted name
 next to the including file, `<name>` through the build's include

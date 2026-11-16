@@ -42,6 +42,11 @@ type Options struct {
 	// the crawl rather than at the first lookup, for the crawls sharing
 	// its Includes as well.
 	Lookups []string
+	// Regions are the conditions of header lines the caller will read
+	// (see Result.Macros): the macros their defined() tests name are
+	// grepped for during the crawl, all at once, for the crawls sharing its
+	// Includes as well; another is grepped for when first read.
+	Regions []*kcond.Expr
 	// Dirs is what the directories of the tree listed in earlier crawls
 	// of it (see Dirs); nil starts afresh.
 	Dirs *Dirs
@@ -341,7 +346,15 @@ func Crawl(fsys fs.FS, opts Options) (*Result, error) {
 	var scanErr error
 	if r.Includes = opts.Includes; r.Includes == nil {
 		headers := slices.ContainsFunc(opts.Lookups, func(p string) bool { return path.Ext(p) == ".h" })
-		scan.Go(func() { r.Includes, scanErr = scanIncludes(fsys, headers) })
+		var macros []string
+		for _, e := range opts.Regions {
+			for _, atom := range e.Opaque() {
+				if x, ok := definedName(atom); ok {
+					macros = append(macros, x)
+				}
+			}
+		}
+		scan.Go(func() { r.Includes, scanErr = scanIncludes(fsys, headers, macros) })
 	}
 	if r.Dirs = opts.Dirs; r.Dirs == nil {
 		r.Dirs = &Dirs{done: map[string]dirEntry{}}

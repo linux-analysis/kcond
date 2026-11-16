@@ -124,7 +124,7 @@ func Search(ctx context.Context, dir string, args []string, fl Filters, o Option
 			return err
 		}
 		tree = t
-		if b, built = builds.NewSession(tree, nil).Build(build); built {
+		if b, built = builds.NewSession(tree, nil, nil).Build(build); built {
 			warn(o.Warn, b)
 		}
 		return nil

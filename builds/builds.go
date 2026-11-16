@@ -117,6 +117,7 @@ func (sp buildSpec) values(fsys fs.FS) (*kconfig.Values, error) {
 type Session struct {
 	fsys    fs.FS
 	lookups []string
+	regions []*kcond.Expr
 	inc     *kbuild.Includes
 	dirs    *kbuild.Dirs
 
@@ -126,9 +127,10 @@ type Session struct {
 }
 
 // NewSession reads the builds of the tree in fsys; lookups are the files
-// the caller will look up (see kbuild.Options).
-func NewSession(fsys fs.FS, lookups []string) *Session {
-	return &Session{fsys: fsys, lookups: lookups}
+// the caller will look up, and regions the conditions of the header lines
+// it will read (see kbuild.Options).
+func NewSession(fsys fs.FS, lookups []string, regions []*kcond.Expr) *Session {
+	return &Session{fsys: fsys, lookups: lookups, regions: regions}
 }
 
 // Build returns the build named name (one of kernel.ConfigBuilds), its
@@ -159,7 +161,7 @@ func (s *Session) Builds(f func(Build) error) error {
 
 func (s *Session) build(sp buildSpec) Build {
 	b := Build{Arch: sp.arch, Name: sp.name, X86_64: sp.name == kernel.X86_64Build}
-	sp.opts.Includes, sp.opts.Lookups, sp.opts.Dirs = s.inc, s.lookups, s.dirs
+	sp.opts.Includes, sp.opts.Lookups, sp.opts.Regions, sp.opts.Dirs = s.inc, s.lookups, s.regions, s.dirs
 	var analysis sync.WaitGroup
 	var kconfigErr error
 	analysis.Go(func() { b.Values, kconfigErr = sp.values(s.fsys) })

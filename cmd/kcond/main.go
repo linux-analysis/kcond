@@ -365,9 +365,10 @@ func buildName(o opts) string {
 }
 
 // each calls f with each build of the tree, or only the one buildName
-// gives; lookups are the files f looks up.
-func each(fsys fs.FS, o opts, lookups []string, f func(builds.Build) error) error {
-	s := builds.NewSession(fsys, lookups)
+// gives; lookups are the files f looks up, and regions the conditions of
+// the header lines it reads (see builds.NewSession).
+func each(fsys fs.FS, o opts, lookups []string, regions []*kcond.Expr, f func(builds.Build) error) error {
+	s := builds.NewSession(fsys, lookups, regions)
 	build := buildName(o)
 	if build == "" {
 		return s.Builds(func(b builds.Build) error {
@@ -520,10 +521,14 @@ func cond(ctx context.Context, o opts, args []string, out io.Writer) error {
 	}
 	rows := []fileCond{}
 	paths := make([]string, len(queries))
+	var headers []*kcond.Expr
 	for i, q := range queries {
 		paths[i] = q.path
+		if f, _ := kernel.FileOf(q.path); f.Header {
+			headers = append(headers, regions[i])
+		}
 	}
-	err = each(fsys, o, paths, func(b builds.Build) error {
+	err = each(fsys, o, paths, headers, func(b builds.Build) error {
 		for i, q := range queries {
 			f, _ := kernel.FileOf(q.path)
 			fc := b.Eval(f, regions[i])
@@ -643,7 +648,7 @@ func arches(ctx context.Context, o opts, paths []string, out io.Writer) error {
 		f, _ := kernel.FileOf(p)
 		fas[i] = builds.FileArches{File: f, Always: []string{}}
 	}
-	err = builds.NewSession(fsys, paths).Builds(func(b builds.Build) error {
+	err = builds.NewSession(fsys, paths, nil).Builds(func(b builds.Build) error {
 		warn(o, b)
 		for i := range fas {
 			fas[i].Add(b, b.Eval(fas[i].File, kcond.Const(true)))
@@ -758,7 +763,7 @@ func symbols(ctx context.Context, o opts, names []string, out io.Writer) error {
 	}
 	defer close()
 	rows := []symbolInfo{}
-	err = each(fsys, o, nil, func(b builds.Build) error {
+	err = each(fsys, o, nil, nil, func(b builds.Build) error {
 		if b.Values == nil {
 			return fmt.Errorf("the %s Kconfig could not be read", b.Name)
 		}
@@ -808,7 +813,7 @@ func oneBuild(fsys fs.FS, o opts) (builds.Build, error) {
 	if name == "" {
 		name = kernel.X86_64Build
 	}
-	b, ok := builds.NewSession(fsys, nil).Build(name)
+	b, ok := builds.NewSession(fsys, nil, nil).Build(name)
 	if !ok {
 		return builds.Build{}, fmt.Errorf("the tree has no %s build", name)
 	}

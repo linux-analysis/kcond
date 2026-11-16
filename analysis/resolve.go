@@ -110,7 +110,8 @@ type Options struct {
 	// goroutines at once, for different files.
 	Visit func(f *File, b builds.Build, fc builds.FileCond)
 
-	greps *gitfs.GrepCache // what the crawls of a Resolve share
+	greps   *gitfs.GrepCache // what the crawls of a Resolve share
+	regions []*kcond.Expr    // the regions of its headers (see Resolve)
 }
 
 // initial is what is known of a file before any revision is read.
@@ -146,6 +147,15 @@ func Resolve(ctx context.Context, dir string, files []*File, opts Options) ([]Re
 			pending = append(pending, i)
 		} else if !f.Header {
 			results[i].before.Status = builds.StatusMissing
+		}
+	}
+	// Every revision is given the regions of all the headers, so that their
+	// crawls grep for the same macros (see kbuild.Options.Regions).
+	seen := map[*kcond.Expr]bool{}
+	for _, f := range files {
+		if f.Header && !seen[f.Region] {
+			seen[f.Region] = true
+			opts.regions = append(opts.regions, f.Region)
 		}
 	}
 	crawled := 0
@@ -282,7 +292,7 @@ func Rev(ctx context.Context, dir, rev string, files []*File, opts Options) ([]R
 	for _, i := range found {
 		paths = append(paths, files[i].Path)
 	}
-	s := builds.NewSession(tree, paths)
+	s := builds.NewSession(tree, paths, opts.regions)
 	if opts.Build != "" {
 		b, ok := s.Build(opts.Build)
 		switch {

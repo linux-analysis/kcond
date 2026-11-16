@@ -63,7 +63,7 @@ func (r *Result) Define(p, x string) (set, unset *kcond.Expr) {
 	if many {
 		return e, e
 	}
-	return r.fold(p, nodes, func(c compilation) (*kcond.Expr, *kcond.Expr) {
+	return r.fold(p, nodes, func(_ string, c compilation) (*kcond.Expr, *kcond.Expr) {
 		var fs []*kcond.Expr
 		for _, f := range c.flags {
 			if f.kind == defineMacro && f.arg == x {
@@ -75,19 +75,20 @@ func (r *Result) Define(p, x string) (set, unset *kcond.Expr) {
 	})
 }
 
-// fold ORs the two conditions f gives each compilation of source p, and
-// each of a file that #includes p, there under the directive's condition,
+// fold ORs the two conditions f gives each compilation c of a file src:
+// of source p, and of each file that #includes p, there under the
+// directive's condition,
 // through the includers of the includers, nodes (see reach): the
 // conditions propagate up the include graph as directory conditions do,
 // each file once, where a header of thousands of includers has too many
 // paths to follow.
-func (r *Result) fold(p string, nodes map[string]bool, f func(compilation) (a, b *kcond.Expr)) (a, b *kcond.Expr) {
+func (r *Result) fold(p string, nodes map[string]bool, f func(src string, c compilation) (a, b *kcond.Expr)) (a, b *kcond.Expr) {
 	ra, rb := map[string]*kcond.Expr{}, map[string]*kcond.Expr{}
 	edges := map[string][]edge{}
 	for n := range nodes {
 		edges[n] = r.includersOf(n)
 		for _, c := range r.compiled[n] {
-			ca, cb := f(c)
+			ca, cb := f(n, c)
 			ra[n], rb[n] = orExpr(ra[n], ca), orExpr(rb[n], cb)
 		}
 	}
@@ -114,7 +115,7 @@ func (r *Result) Module(p string) (builtin, module *kcond.Expr) {
 	if many {
 		return e, kcond.And(e, kcond.Var("CONFIG_MODULES", kcond.Enabled))
 	}
-	return r.fold(p, nodes, func(c compilation) (*kcond.Expr, *kcond.Expr) { return c.builtin, c.module })
+	return r.fold(p, nodes, func(_ string, c compilation) (*kcond.Expr, *kcond.Expr) { return c.builtin, c.module })
 }
 
 // maxFold bounds the sources whose compilations fold follows into a

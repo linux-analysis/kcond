@@ -136,7 +136,7 @@ func analyzeFiles(t *testing.T, fsys fstest.MapFS, regions map[string]string) ma
 		out[p] = &FileArches{File: file(p)}
 	}
 	var builds, names []string
-	err := NewSession(fsys, nil).Builds(func(b Build) error {
+	err := NewSession(fsys, nil, nil).Builds(func(b Build) error {
 		builds = append(builds, b.Arch)
 		names = append(names, b.Name)
 		for p, f := range out {
@@ -161,7 +161,7 @@ func TestEval(t *testing.T) {
 	paths := []string{"drivers/msm.c", "drivers/msm.h", "drivers/dead.c", "drivers/new.c", "drivers/qcom.c", "arch/arm64/kernel/cpu.c",
 		"arch/x86/kernel/entry_32.S", "arch/mips/kernel/setup.c", "include/linux/wifi.h"}
 	got := map[string]map[string]string{}
-	err := NewSession(archTree(), nil).Builds(func(b Build) error {
+	err := NewSession(archTree(), nil, nil).Builds(func(b Build) error {
 		for _, p := range paths {
 			fc := b.Eval(file(p), region)
 			s := fc.Status.String()
@@ -315,7 +315,7 @@ func TestBuildsShareIncludes(t *testing.T) {
 	// others reuse its scan.
 	var first *kbuild.Includes
 	n := 0
-	err := NewSession(archTree(), nil).Builds(func(b Build) error {
+	err := NewSession(archTree(), nil, nil).Builds(func(b Build) error {
 		if first == nil {
 			first = b.Kbuild.Includes
 		}
@@ -347,10 +347,10 @@ func TestFailedBuild(t *testing.T) {
 	}
 	// Err says why: here the tree has no top-level Makefile.
 	noMake := fstest.MapFS{"arch/riscv/Kconfig": {Data: []byte("config RISCV\n\tdef_bool y\n")}}
-	if b, ok := NewSession(noMake, nil).Build("riscv"); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
+	if b, ok := NewSession(noMake, nil, nil).Build("riscv"); !ok || b.Kbuild != nil || !errors.Is(b.Err, kbuild.ErrNoMakefile) {
 		t.Errorf("Named without a Makefile = %+v, %v; want Err ErrNoMakefile", b, ok)
 	}
-	err := NewSession(noMake, nil).Builds(func(b Build) error {
+	err := NewSession(noMake, nil, nil).Builds(func(b Build) error {
 		if !errors.Is(b.Err, kbuild.ErrNoMakefile) || b.Values == nil {
 			t.Errorf("Each without a Makefile: %s: Err %v, Values %v", b.Name, b.Err, b.Values)
 		}
@@ -497,7 +497,7 @@ func equal(a, b *kcond.Expr) bool {
 // X and X=m as false. Tristates, and symbols its Kconfig lacks, stay.
 func TestBuildPlain(t *testing.T) {
 	var x86 Build
-	if err := NewSession(archTree(), nil).Builds(func(b Build) error {
+	if err := NewSession(archTree(), nil, nil).Builds(func(b Build) error {
 		if b.X86_64 {
 			x86 = b
 		}
@@ -567,7 +567,7 @@ func TestBuildValues(t *testing.T) {
 }
 
 func TestImplies(t *testing.T) {
-	b, ok := NewSession(archTree(), nil).Build("x86_64")
+	b, ok := NewSession(archTree(), nil, nil).Build("x86_64")
 	if !ok || b.Values == nil {
 		t.Fatalf("x86_64 build: %v", b.Err)
 	}

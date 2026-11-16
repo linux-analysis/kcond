@@ -3,6 +3,7 @@ package kbuild
 import (
 	"bytes"
 	"io/fs"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -39,9 +40,13 @@ type Includes struct {
 
 	// The builds of a tree share one Includes (see Options), so the
 	// #include lines of the tree, which find the includers of a header,
-	// are listed once; nil until a header is looked up.
-	mu     sync.Mutex
-	listed *incListing
+	// are listed once; nil until a header is looked up. mu guards them,
+	// and what grepDefines finds: the files that #define each macro
+	// grepped for, and flagged, the macros a Makefile names after -D.
+	mu      sync.Mutex
+	listed  *incListing
+	defines map[string][]string
+	flagged map[string]bool
 }
 
 // incListing is the #include lines of the .c, .S and .h files of a tree.
@@ -89,6 +94,88 @@ type GrepFS interface {
 }
 
 var includeLine = regexp.MustCompile(`^\s*#\s*include\s*(["<])([^">]+)[">]`)
+
+// dFlag is a -D flag on a Makefile line, with the macro it names, and
+// defineLine a #define line, with the macro it defines.
+var (
+	dFlag      = regexp.MustCompile(`-D\s*['"]?([A-Za-z_][A-Za-z0-9_]*)`)
+	defineLine = regexp.MustCompile(`^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)`)
+)
+
+// sourceDefined returns the files that #define macro x when they are all
+// .c and .S files no other file includes, no Makefile names x after -D,
+// and some file defines it, unlike the compiler's macros, so that x is
+// undefined in a file none of them compiles; nil otherwise, and without
+// GrepFS. A macro not grepped for yet is grepped for alone. The result is
+// not to be changed.
+// shortcut: the generated headers (bounds.h, asm-offsets.h) and the
+// compiler's macros are not seen, so a .c file that #defines one of theirs
+// reads it as undefined elsewhere; check them if one does.
+func (inc *Includes) sourceDefined(fsys fs.FS, x string) []string {
+	inc.mu.Lock()
+	defer inc.mu.Unlock()
+	inc.grepDefines(fsys, []string{x})
+	files := inc.defines[x]
+	if slices.ContainsFunc(files, func(f string) bool { return path.Ext(f) == ".h" || len(inc.Targets[f]) > 0 }) {
+		return nil
+	}
+	return files
+}
+
+// grepDefines finds the files that #define each of xs not grepped for
+// yet, all with one grep, as it costs about one macro's: the tree is read
+// once either way. The trees of a run given the same macros grep the same
+// strings, which their GrepCache answers past the first from the blobs it
+// has not read. The macros a Makefile names after -D are found first,
+// once, and left out. A grep that fails leaves the macros unknown; inc.mu
+// is held.
+func (inc *Includes) grepDefines(fsys fs.FS, xs []string) {
+	g, ok := fsys.(GrepFS)
+	if !ok {
+		return
+	}
+	if inc.flagged == nil {
+		lines, err := g.GrepLines([]string{"-D"}, "*Makefile*", "*Kbuild*")
+		if err != nil {
+			return
+		}
+		inc.flagged, inc.defines = map[string]bool{}, map[string][]string{}
+		for _, ls := range lines {
+			for _, l := range ls {
+				for _, m := range dFlag.FindAllStringSubmatch(l, -1) {
+					inc.flagged[m[1]] = true
+				}
+			}
+		}
+	}
+	todo := map[string]bool{}
+	for _, x := range xs {
+		if _, done := inc.defines[x]; !done && !inc.flagged[x] {
+			todo[x] = true
+		}
+	}
+	if len(todo) == 0 {
+		return
+	}
+	lines, err := g.GrepLines(slices.Sorted(maps.Keys(todo)), "*.c", "*.S", "*.h")
+	if err != nil {
+		return
+	}
+	found := map[string][]string{}
+	for f, ls := range lines {
+		for _, l := range ls {
+			if m := defineLine.FindStringSubmatch(l); m != nil && todo[m[1]] {
+				if got := found[m[1]]; len(got) == 0 || got[len(got)-1] != f {
+					found[m[1]] = append(got, f)
+				}
+			}
+		}
+	}
+	for x := range todo {
+		slices.Sort(found[x])
+		inc.defines[x] = found[x]
+	}
+}
 
 // incLines reads the #include lines of the source data of file p, with
 // the condition of each line; unbalanced directives leave every line
@@ -301,17 +388,25 @@ func (l *incListing) namingSources() []string {
 // in each directory above it, as the -I$(src) and -I$(srctree) of Kbuild
 // flags find it; a name the tree lacks, such as a generated table, is left
 // out. Without GrepFS every source is read.
-func ScanIncludes(fsys fs.FS) (*Includes, error) { return scanIncludes(fsys, false) }
+func ScanIncludes(fsys fs.FS) (*Includes, error) { return scanIncludes(fsys, false, nil) }
 
 // scanIncludes is ScanIncludes that, with list, lists the #include lines of
 // the tree as well (see Includes) and takes the .c and .S files to read from
 // them, not from a grep of its own. A listing that fails is tried again, and
-// reported, at the first lookup. The Rust files are read meanwhile.
-func scanIncludes(fsys fs.FS, list bool) (*Includes, error) {
+// reported, at the first lookup. The Rust files are read meanwhile, and the
+// #defines of macros greps for (see grepDefines).
+func scanIncludes(fsys fs.FS, list bool, macros []string) (*Includes, error) {
 	inc := &Includes{Targets: map[string][]Include{}}
 	var listing sync.WaitGroup
 	if list {
 		listing.Go(func() { inc.listed, _ = listIncludes(fsys) })
+	}
+	if len(macros) > 0 {
+		listing.Go(func() {
+			inc.mu.Lock()
+			defer inc.mu.Unlock()
+			inc.grepDefines(fsys, macros)
+		})
 	}
 	defer listing.Wait()
 	g, isGrep := fsys.(GrepFS)
