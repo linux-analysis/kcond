@@ -253,7 +253,8 @@ func (g grepTree) GrepLines(strs []string, globs ...string) (map[string][]string
 // leave open, an #else after a tab, a guard after comment lines that
 // mention #include, a guard with a comment, a continuation followed by
 // spaces, a guard after an #include, an #ifndef after one that is not a
-// guard, and guards opened with #if !defined(X).
+// guard, guards opened with #if !defined(X), and a trace header's, ORed
+// with defined(TRACE_HEADER_MULTI_READ).
 func TestListIncludesGrep(t *testing.T) {
 	files := map[string]string{
 		"a.c": "#include <a1.h> /* first,\n   second */\n#include <a2.h>\n",
@@ -265,11 +266,13 @@ func TestListIncludesGrep(t *testing.T) {
 		"g.h": "#include <g0.h>\n#ifndef __ASSEMBLY__\n#include <g1.h>\n#endif\n",
 		"h.h": "#if !defined(_H_H)\n#define _H_H\n#include <h1.h>\n#endif\n",
 		"i.h": "#include <i0.h>\n#if !defined(_I_H)\n#define _I_H\n#include <i1.h>\n#endif\n",
+		"t.h": "#undef TRACE_SYSTEM\n#define TRACE_SYSTEM t\n#if !defined(_T_H) || defined(TRACE_HEADER_MULTI_READ)\n#define _T_H\n#include <t1.h>\n#endif\n#include <trace/define_trace.h>\n",
 	}
 	guarded := map[string][]string{
 		"f.h": {"f0.h true", "f1.h true"},
 		"h.h": {"h1.h true"},
 		"i.h": {"i0.h true", "i1.h true"},
+		"t.h": {"t1.h true", "trace/define_trace.h true"},
 	}
 	fsys := grepTree{FS: tree(files)}
 	list, err := listIncludes(fsys)

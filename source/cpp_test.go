@@ -302,7 +302,8 @@ func TestIncludeGuard(t *testing.T) {
 		"#ifndef A\n#if B\n#endif\n#endif\n/* end */\n":          0,
 		"#include <a.h>\n#if !defined(A)\n#define A\n#endif\n":   1,
 		"#if !defined A\n#define A\n#endif\n":                    0,
-		"#if !defined(A) || defined(B)\n#define A\n#endif\n":     -1,
+		"#if !defined(A) || defined(B)\n#define A\n#endif\n":     0,
+		"#if !defined(A) && defined(B)\n#define A\n#endif\n":     -1,
 		"x\n": -1,
 	} {
 		if got := IncludeGuard(strings.Split(src, "\n")); got != want {
@@ -313,13 +314,16 @@ func TestIncludeGuard(t *testing.T) {
 
 func TestGuardMacro(t *testing.T) {
 	for line, want := range map[string]string{
-		"#ifndef X /* c */":       "X",
-		"# if !defined( X ) // c": "X",
-		"#if !defined X":          "X",
-		"#if !defined(X) && Y":    "",
-		"#ifdef X":                "",
-		"#ifndef 1":               "",
-		"int x;":                  "",
+		"#ifndef X /* c */":             "X",
+		"# if !defined( X ) // c":       "X",
+		"#if !defined X":                "X",
+		"#if !defined(X) && Y":          "",
+		"#if !defined(X) || defined(Y)": "X",
+		"#if !defined X || Y":           "X",
+		"#if !defined(X) || Y ? 1 : 0":  "",
+		"#ifdef X":                      "",
+		"#ifndef 1":                     "",
+		"int x;":                        "",
 	} {
 		if got := GuardMacro(line); got != want {
 			t.Errorf("%q: %q, want %q", line, got, want)

@@ -68,9 +68,9 @@ const maxDefinition = 4096
 // change wrapping code in #ifdef CONFIG_X reads as one to CONFIG_X; #endif
 // gets that of the branch it closes; other directives that of their region.
 // Conditions that ParseIf rejects become opaque atoms; unbalanced directives are an
-// error. An include guard (an #ifndef X or #if !defined(X) directly
-// followed by #define X whose #endif ends the file, whatever comes before
-// it; see IncludeGuard) adds no condition. A macro the file itself #defines or #undefs is known after
+// error. An include guard (an #ifndef X or #if !defined(X), alone or
+// ORed with more, directly followed by #define X whose #endif ends the
+// file, whatever comes before it; see IncludeGuard) adds no condition. A macro the file itself #defines or #undefs is known after
 // that, where it would otherwise be an opaque atom: defined there, or not,
 // under the condition of the directive's line, and in a C or assembly
 // source undefined before the first #include, as nothing else could have
@@ -340,13 +340,19 @@ func GuardMacro(line string) string {
 }
 
 // guardMacro returns X when the directive name with rest is a test an
-// include guard opens with: #ifndef X, #if !defined(X) or #if !defined X;
-// "" otherwise.
+// include guard opens with: #ifndef X, #if !defined(X) or #if !defined X,
+// the last two alone or ORed with more, as a trace header's
+// || defined(TRACE_HEADER_MULTI_READ); "" otherwise.
 func guardMacro(name, rest string) string {
 	toks, _ := lexIf(rest)
 	if name == "if" {
-		if len(toks) == 5 && toks[2] == "(" && toks[4] == ")" {
-			toks = []string{toks[0], toks[1], toks[3]}
+		if len(toks) >= 5 && toks[2] == "(" && toks[4] == ")" {
+			toks = slices.Concat(toks[:2], toks[3:4], toks[5:])
+		}
+		// The first read enters the block where X is undefined, whatever
+		// the rest; a ?: would take the whole OR as its condition.
+		if len(toks) > 3 && toks[3] == "||" && !slices.Contains(toks, "?") {
+			toks = toks[:3]
 		}
 		if len(toks) != 3 || toks[0] != "!" || toks[1] != "defined" {
 			return ""
